@@ -78,9 +78,23 @@ def _system_prompt(lang_name: str) -> str:
         f"content: if part of a line is too garbled to read, translate only what "
         f"is clear. Preserve the tone and register of dramatic dialogue and render "
         f"idioms, chengyu and set phrases naturally rather than word-for-word, but "
-        f"never flatten a deliberately odd, blunt or ironic line into a bland one. "
-        f"Output only the {lang_name} translation itself: no quotes, no pinyin, no "
-        f"notes, no source text, no explanations."
+        f"never flatten a deliberately odd, blunt or ironic line into a bland one.\n"
+        f"Also:\n"
+        f"- When a speaker tags their own name into a first-person clause "
+        f"(我张三…, 我傅正川…), drop the name — {lang_name} carries that emphasis "
+        f"through intonation or first-person/possessive framing "
+        f'(这是我傅正川下的命令 → "this is my order", not "…, Fu Zhengchuan").\n'
+        f"- A genuine question word (什么, 谁, 哪, 怎么, 为什么, 几, 多少) makes the "
+        f"line a question even with no final 吗 — render it as a real question with "
+        f'a question mark (藏了什么好吃的 → "Hiding something good to eat?"); but '
+        f"leave non-question uses alone (什么都 = anything, 谁都 = everyone, 几 = a few).\n"
+        f"- Never carry a proper noun (name or place) from the context lines into "
+        f"the current line unless it also appears in the current line's own source; "
+        f'context disambiguates, it is not content (雄飞 only in context → never '
+        f'append "…, Xiongfei").\n'
+        f"Output only the {lang_name} translation itself — a properly capitalized, "
+        f"properly punctuated sentence or clause, even for a continuation fragment "
+        f"— with no quotes, pinyin, notes, source text or explanations."
     )
 
 
@@ -146,7 +160,8 @@ class GroqTranslator:
             user = (
                 "Earlier lines, for context only — do not translate or repeat "
                 "them:\n" + "\n".join(ctx) +
-                f"\n\nTranslate only this line, as a natural continuation:\n{text}"
+                "\n\nTranslate only this line as its own properly capitalized "
+                f"clause (use the context only to disambiguate):\n{text}"
             )
         else:
             user = f"Translate this line:\n{text}"
