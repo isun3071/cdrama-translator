@@ -41,6 +41,7 @@ except Exception:
     pass
 
 from audit_log import LOG_DIR
+from judge_llm import complete, judge_session
 
 
 def load(path: Path) -> list[dict]:
@@ -148,19 +149,19 @@ _MQM_SYS = (
 )
 
 
-def _mqm_vote(sess, model: str, ctx: str, src: str, trn: str) -> tuple[dict, dict]:
-    """One independent MQM annotation pass. Returns ({category: worst_severity},
-    {category: note}) for this vote; raises on transport/parse failure."""
+def _mqm_vote(sess, url: str, model: str, ctx: str, src: str, trn: str,
+              provider: str = "groq", temperature: float = 0.0) -> tuple[dict, dict]:
+    """One MQM annotation pass. Returns ({category: worst_severity}, {category: note});
+    raises on transport/parse failure. Routed through the configured grader provider."""
     user = (f"Context (reference, do not grade):\n{ctx or '(none)'}\n\n"
             f"Chinese: {src}\nEnglish: {trn}")
-    body = {"model": model, "temperature": 0.0,
-            "messages": [{"role": "system", "content": _MQM_SYS}, {"role": "user", "content": user}],
-            "response_format": {"type": "json_object"}, "max_tokens": 400}
-    if any(k in model.lower() for k in ("qwen", "qwq")):
-        body["reasoning_effort"] = "none"
-    resp = sess.post("https://api.groq.com/openai/v1/chat/completions", json=body, timeout=30)
-    resp.raise_for_status()
-    data = json.loads(resp.json()["choices"][0]["message"]["content"])
+    content = complete(
+        sess, url, model,
+        [{"role": "system", "content": _MQM_SYS}, {"role": "user", "content": user}],
+        provider=provider, response_format={"type": "json_object"}, max_tokens=400,
+        temperature=temperature, timeout=30,
+    )
+    data = json.loads(content)
     catsev, notes = {}, {}
     for e in (data.get("errors") or []):
         c = e.get("category", "")
@@ -174,18 +175,15 @@ def _mqm_vote(sess, model: str, ctx: str, src: str, trn: str) -> tuple[dict, dic
 
 
 def judge(rows: list[dict], n: int) -> None:
-    import requests
-
-    key = os.getenv("GROQ_API_KEY", "").strip()
-    if not key:
-        print("judge needs GROQ_API_KEY (in the repo-root .env or the env).", file=sys.stderr)
+    sess, url, model, provider, has_key = judge_session()
+    if not has_key:
+        need = "OPENROUTER_API_KEY" if provider == "openrouter" else "GROQ_API_KEY"
+        print(f"judge needs {need} for JUDGE_PROVIDER={provider} (repo-root .env).", file=sys.stderr)
         return
     translator_model = os.getenv("GROQ_MODEL", "qwen/qwen3.6-27b")
-    model = os.getenv("GROQ_JUDGE_MODEL", translator_model)
     votes = max(1, int(os.getenv("GROQ_JUDGE_VOTES", "3")))  # GEMBA-MQM v2: aggregate independent judgments
     maj = votes // 2 + 1
-    sess = requests.Session()
-    sess.headers.update({"Authorization": f"Bearer {key}", "Content-Type": "application/json"})
+    temp = 0.4 if votes > 1 else 0.0   # votes must VARY to aggregate — temp 0 makes them identical
 
     pool = [r for r in rows if r.get("status") == "ok" and r.get("translation") and r.get("source_text")]
     if not pool:
@@ -194,10 +192,11 @@ def judge(rows: list[dict], n: int) -> None:
     # Even coverage across the log without Math.random-style bias: stride sample.
     step = max(1, len(pool) // n)
     sample = pool[::step][:n]
-    self_eval = model == translator_model
-    print(f"\nGEMBA-MQM: {len(sample)} of {len(pool)} ok lines x {votes} vote(s), grader={model}")
+    self_eval = provider == "groq" and model == translator_model
+    print(f"\nGEMBA-MQM: {len(sample)} of {len(pool)} ok lines x {votes} vote(s), grader={model} via {provider}")
     print(f"  offline pass over the log (~{len(sample)*votes} calls)"
-          + ("  — SELF-EVAL: grader == translator, biased high; set GROQ_JUDGE_MODEL for a real audit" if self_eval else "")
+          + (f", votes @ temp {temp}" if votes > 1 else "")
+          + ("  — SELF-EVAL: grader == translator, biased high; set JUDGE_MODEL / JUDGE_PROVIDER for a real audit" if self_eval else "")
           + "\n")
 
     scored = []
@@ -207,7 +206,7 @@ def judge(rows: list[dict], n: int) -> None:
         catcount, worst, notes, penalties = collections.Counter(), {}, {}, []
         for _ in range(votes):
             try:
-                catsev, vnotes = _mqm_vote(sess, model, ctx, src, trn)
+                catsev, vnotes = _mqm_vote(sess, url, model, ctx, src, trn, provider, temp)
             except Exception:
                 continue  # a dead vote just doesn't count toward the majority
             penalties.append(sum(_MQM_WEIGHT[s] for s in catsev.values()))

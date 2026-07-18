@@ -144,11 +144,19 @@ audit measures the **stages the log already separates**, all after the fact:
   clean-rate, per-category incidence, and the worst lines with jump-to timestamps.
 
 The judge runs **separately on a jsonl, never live** — it's several LLM calls per
-line and would blow the bounded-lag budget on the wire. `GROQ_JUDGE_MODEL` picks the
-grader; it **defaults to the translator model** (a self-eval first pass, biased high
-— the run prints a `SELF-EVAL` warning), so set a different/stronger model for a real
-audit. The judge deliberately ignores OCR garble in the *source* (that's the OCR
-stage's job, covered by `--metrics`), so the two passes don't double-count.
+line and would blow the bounded-lag budget on the wire. Because it's a *batch* pass,
+quality beats speed, so the grader is decoupled from the (Groq) translator:
+`JUDGE_PROVIDER` (`groq` | `openrouter`) + `JUDGE_MODEL` pick it. **Prefer a grader
+with strong Chinese** — MQM adequacy means reading the source, and llama is a fine
+*fluency* judge but weak on hanzi; via OpenRouter (`OPENROUTER_API_KEY`) use
+`deepseek/deepseek-chat`, a Claude, or a GPT-class model, which read the source
+properly and aren't the same family as the Qwen translator (no self-eval / correlated
+blind spots — the run prints a `SELF-EVAL` warning if grader == translator). Votes
+auto-use a small temperature when >1 so they actually vary (temp 0 would make "N
+independent votes" identical). The judge deliberately ignores OCR garble in the
+*source* (that's the OCR stage's job, covered by `--metrics`), so the two passes don't
+double-count. All three judge tools route through `judge_llm.py`, so switching the
+grader is one env change and never touches translation.
 
 ### Drift judge — `drift_judge.py` (cross-line consistency only)
 

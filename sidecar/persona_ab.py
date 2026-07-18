@@ -55,6 +55,7 @@ from audit_log import LOG_DIR
 from glossary import GLOSSARY
 from translate import _system_prompt, _LANG
 from drift_judge import _show_key, _corpus, _corpus_banner, _MIN_SHOW_SAMPLE, _GATE_MIN_SHOWS  # corpus scoping
+from judge_llm import judge_session
 
 # --- the arms: framing (Factor A) x clauses (Factor B) ---------------------- #
 # DRAFT — finalize wording before running. Kept minimal; the rule block is shared.
@@ -147,13 +148,13 @@ def _make_arm_translators(lang: str):
     return arms
 
 
-def _score(sess, judge_model: str, votes: int, ctx: str, src: str, en: str):
+def _score(sess, url, model, provider, votes, temperature, ctx, src, en):
     """Aggregate GEMBA-MQM over votes -> (median penalty, {confirmed cat: sev})."""
     maj = votes // 2 + 1
     catcount, worst, penalties = collections.Counter(), {}, []
     for _ in range(votes):
         try:
-            catsev, _notes = _mqm_vote(sess, judge_model, ctx, src, en)
+            catsev, _notes = _mqm_vote(sess, url, model, ctx, src, en, provider, temperature)
         except Exception:
             continue
         penalties.append(sum(_MQM_WEIGHT[s] for s in catsev.values()))
@@ -167,15 +168,16 @@ def _score(sess, judge_model: str, votes: int, ctx: str, src: str, en: str):
 
 
 def run(rows: list[dict], n_guard: int, n_targeted: int, votes: int, target_lang: str, out_path: Path) -> None:
-    import requests
-    key = os.getenv("GROQ_API_KEY", "").strip()
-    if not key:
-        print("run needs GROQ_API_KEY.", file=sys.stderr)
+    if not os.getenv("GROQ_API_KEY", "").strip():
+        print("run needs GROQ_API_KEY (the arms translate via Groq).", file=sys.stderr)
         return
     lang = _LANG.get(target_lang, target_lang)
-    judge_model = os.getenv("GROQ_JUDGE_MODEL", "llama-3.3-70b-versatile")
-    sess = requests.Session()
-    sess.headers.update({"Authorization": f"Bearer {key}", "Content-Type": "application/json"})
+    sess, url, judge_model, provider, has_key = judge_session()
+    if not has_key:
+        need = "OPENROUTER_API_KEY" if provider == "openrouter" else "GROQ_API_KEY"
+        print(f"judge needs {need} for JUDGE_PROVIDER={provider}.", file=sys.stderr)
+        return
+    temp = 0.4 if votes > 1 else 0.0
     translators = _make_arm_translators(lang)
 
     guard = [{**r, "_stratum": "guardrail"} for r in _sample(rows, n_guard, targeted=False)]
@@ -183,7 +185,7 @@ def run(rows: list[dict], n_guard: int, n_targeted: int, votes: int, target_lang
     items = guard + targ
     calls = len(items) * len(ARMS) * (1 + votes)
     print(f"\npersona A/B — {len(guard)} guardrail + {len(targ)} targeted lines x {len(ARMS)} arms")
-    print(f"  translate model={os.getenv('GROQ_MODEL','qwen/qwen3.6-27b')}  judge={judge_model} x{votes} votes")
+    print(f"  translate model={os.getenv('GROQ_MODEL','qwen/qwen3.6-27b')}  judge={judge_model} via {provider} x{votes} votes")
     print(f"  ~{calls} API calls. Paired; McNemar power needs ~30 discordant pairs.\n")
 
     results = []
@@ -197,7 +199,7 @@ def run(rows: list[dict], n_guard: int, n_targeted: int, votes: int, target_lang
                "frame_id": it.get("frame_id"), "source_text": src, "arms": {}}
         for arm, t in translators.items():
             en = t.translate(src, "ch", target_lang, ctx_list, it.get("continuation", False), gloss)
-            pen, conf = _score(sess, judge_model, votes, ctx, src, en)
+            pen, conf = _score(sess, url, judge_model, provider, votes, temp, ctx, src, en)
             row["arms"][arm] = {"translation": en, "penalty": pen, "confirmed": conf}
         results.append(row)
 

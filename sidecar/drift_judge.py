@@ -55,6 +55,7 @@ except Exception:
 
 from audit import load, split_stages, _latest_log
 from audit_log import LOG_DIR
+from judge_llm import complete, judge_session
 
 _SEV = {"minor": 1, "major": 5, "critical": 10}
 _CATS = ("cross-speaker-leak", "stale-referent", "register-drift",
@@ -200,21 +201,21 @@ def _divergence(rates: list) -> str | None:
     return None
 
 
-def _drift_vote(sess, model: str, window: list[dict]) -> dict:
+def _drift_vote(sess, url: str, model: str, window: list[dict],
+                provider: str = "groq", temperature: float = 0.0) -> dict:
     """One annotation pass -> {category: (worst_severity, scope)}; raises on failure."""
     lines = []
     for w in window:
         tag = ">> TARGET" if w["is_target"] else "line     "
         lines.append(f"{tag} zh: {w['src']}   en: {w['en']}")
     user = "WINDOW (earliest first):\n" + "\n".join(lines) + "\n\nAnnotate only the >> TARGET line."
-    body = {"model": model, "temperature": 0.0,
-            "messages": [{"role": "system", "content": _SYS}, {"role": "user", "content": user}],
-            "response_format": {"type": "json_object"}, "max_tokens": 500}
-    if any(k in model.lower() for k in ("qwen", "qwq")):
-        body["reasoning_effort"] = "none"
-    resp = sess.post("https://api.groq.com/openai/v1/chat/completions", json=body, timeout=40)
-    resp.raise_for_status()
-    data = json.loads(resp.json()["choices"][0]["message"]["content"])
+    content = complete(
+        sess, url, model,
+        [{"role": "system", "content": _SYS}, {"role": "user", "content": user}],
+        provider=provider, response_format={"type": "json_object"}, max_tokens=500,
+        temperature=temperature, timeout=40,
+    )
+    data = json.loads(content)
     out: dict = {}
     for e in (data.get("errors") or []):
         c = e.get("category")
@@ -233,19 +234,16 @@ def _drift_vote(sess, model: str, window: list[dict]) -> dict:
 
 
 def run(rows: list[dict], n: int, stratified: bool, out_path: Path) -> None:
-    import requests
-
-    key = os.getenv("GROQ_API_KEY", "").strip()
-    if not key:
-        print("drift judge needs GROQ_API_KEY (repo-root .env).", file=sys.stderr)
+    sess, url, model, provider, has_key = judge_session(os.getenv("GROQ_DRIFT_MODEL") or None)
+    if not has_key:
+        need = "OPENROUTER_API_KEY" if provider == "openrouter" else "GROQ_API_KEY"
+        print(f"drift judge needs {need} for JUDGE_PROVIDER={provider} (repo-root .env).", file=sys.stderr)
         return
-    model = os.getenv("GROQ_DRIFT_MODEL", os.getenv("GROQ_JUDGE_MODEL", "llama-3.3-70b-versatile"))
     if "qwen" in model.lower():
         print("WARNING: grader is a Qwen model — same family as the translator (self-eval bias).", file=sys.stderr)
     votes = max(1, int(os.getenv("GROQ_DRIFT_VOTES", "3")))
     maj = votes // 2 + 1
-    sess = requests.Session()
-    sess.headers.update({"Authorization": f"Bearer {key}", "Content-Type": "application/json"})
+    temp = 0.4 if votes > 1 else 0.0   # votes must vary to aggregate
 
     tr, disp = split_stages(rows)
     ok = [r for r in tr if r.get("status") == "ok" and r.get("source_text")]
@@ -268,7 +266,7 @@ def run(rows: list[dict], n: int, stratified: bool, out_path: Path) -> None:
     mode = "STRATIFIED (risky windows; over-estimates frequency — SHAPE only)" if stratified \
         else "RANDOM (population GATE rate)"
     print(f"\ndrift judge — {mode}")
-    print(f"  {len(sample)} of {len(targets)} eligible windows x {votes} vote(s), grader={model}")
+    print(f"  {len(sample)} of {len(targets)} eligible windows x {votes} vote(s), grader={model} via {provider}")
     print(f"  ~{len(sample)*votes} calls, offline. Judge-flagged, NOT verified — confirm by hand.\n")
 
     # Accumulate per SHOW (never collapse straight to aggregate).
@@ -285,7 +283,7 @@ def run(rows: list[dict], n: int, stratified: bool, out_path: Path) -> None:
         ran = 0
         for _ in range(votes):
             try:
-                v = _drift_vote(sess, model, window)
+                v = _drift_vote(sess, url, model, window, provider, temp)
             except Exception:
                 continue
             ran += 1
