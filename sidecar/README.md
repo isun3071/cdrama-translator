@@ -166,6 +166,29 @@ to `llama-3.3-70b-versatile` (not Qwen — avoid self-eval) and aggregates
 would, so confirmed instances are written to `<log>.drift-<mode>.verify.jsonl` with a
 `"verified": null` slot to fill in by hand before trusting the rate.
 
+### Persona A/B harness — `persona_ab.py` (built; finalize the arms, then run)
+
+Tests whether a persona reframe and/or two explicit clauses (audience + commit) beat
+the current prompt, as a clean 2×2 (framing × clauses) so persona and clauses are
+isolated. `control` is the production prompt verbatim; the shared rule block is
+*derived* from it (strip the framing sentence), so each arm differs only by the factor
+under test. The system prompt is overridden by seeding the translator's prompt cache —
+no production code is touched.
+
+```
+python persona_ab.py --dry-run    # sample + assemble arms, NO api calls (inspect first)
+python persona_ab.py [log] --guardrail 400 --targeted 80 --votes 3   # the real run
+```
+
+Two strata: a **random guardrail** (regression check — did an arm make things worse?)
+and a **blind targeted** stratum of convention-bearing lines (name-tag / honorific /
+chengyu) selected by *source pattern only*, never by whether the current prompt gets
+them right, with the matching rule recorded. Judged paired with GEMBA-MQM; the report
+gives per-arm clean-rate + McNemar discordant pairs vs control (flagged underpowered
+below 30). **The `_FRAME_SUB` and `_CLAUSES` drafts are placeholders — finalize them
+before a real run;** `--dry-run` prints all four assembled prompts to inspect the
+control-vs-arm diffs.
+
 ## Consistency glossary
 
 Each line is translated independently, so a recurring term (黄羊, a character
