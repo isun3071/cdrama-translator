@@ -74,9 +74,10 @@ CDT_OCR=mock                    # optional: force the mock OCR (offline / contra
 
 ## Auditing translations
 
-Every request is logged as one JSON line to `logs/translations.jsonl`
-(gitignored), capturing the **whole pipeline per line** so a bad output can be
-traced to the stage it went wrong — not just the final translation:
+Each sidecar run writes its own `logs/cdrama-<YYYYMMDD-HHMMSS>.jsonl` (gitignored),
+one JSON line per request — so sessions never mix. Every line captures the
+**whole pipeline** so a bad output can be traced to the stage it went wrong — not
+just the final translation:
 
 - `stage:"translate"` (sidecar): `video_time` (jump back to the exact frame),
   per-frame `reads` (raw hanzi + conf, **pre-vote**), voted `source_text` + mean
@@ -87,15 +88,16 @@ traced to the stage it went wrong — not just the final translation:
   translate record by `frame_id` — this is how you catch a good translation that
   was shown too briefly or never shown.
 
-Toggle/relocate with `CDT_LOG=0` / `CDT_LOG_PATH=...`.
+`CDT_LOG=0` disables logging; `CDT_LOG_DIR=...` relocates the folder.
 
-Analyse with `audit.py`:
+Analyse with `audit.py` — it defaults to the **most recent run**:
 
 ```
-python audit.py                  # stats: status, OCR confidence, latency, display outcomes, per-episode
+python audit.py                  # stats for the latest run: status, confidence, latency, display outcomes
+python audit.py --all            # combine every run in the log dir
 python audit.py --pipeline 20    # last 20 lines' full per-stage trace (reads -> voted -> ctx -> translation -> display)
 python audit.py --judge 40       # LLM-judge a sample for accuracy (1-5 + flagged suspects)
-python audit.py --label 四合院 --lang en --judge 40
+python audit.py logs/cdrama-20260718-*.jsonl --label 四合院 --lang en
 ```
 
 The judge defaults to the same Groq model that produced the translations — a

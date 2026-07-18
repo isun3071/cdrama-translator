@@ -1,8 +1,9 @@
 """Audit the translation log: stats always, LLM-judged accuracy on request.
 
-    python audit.py                     # stats over the default log
-    python audit.py path/to.jsonl       # stats over a specific log
-    python audit.py --judge 40          # + LLM-judge a random-ish sample of 40
+    python audit.py                     # stats over the MOST RECENT run
+    python audit.py --all               # combine every run in the log dir
+    python audit.py path/to.jsonl       # a specific run
+    python audit.py --pipeline 20       # last 20 lines' full per-stage pipeline
     python audit.py --judge 40 --lang en --label "情满四合院"
 
 The judge scores each shown (source -> translation) pair 1-5 for accuracy and
@@ -29,7 +30,7 @@ try:  # so --judge can reach GROQ_API_KEY; stats works without it
 except Exception:
     pass
 
-from audit_log import LOG_PATH
+from audit_log import LOG_DIR
 
 
 def load(path: Path) -> list[dict]:
@@ -165,20 +166,36 @@ def judge(rows: list[dict], n: int) -> None:
                   f"{'   («'+issue+'»)' if issue else ''}")
 
 
+def _latest_log() -> Path | None:
+    files = sorted(LOG_DIR.glob("*.jsonl"), key=lambda p: p.stat().st_mtime)
+    return files[-1] if files else None
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("path", nargs="?", default=str(LOG_PATH))
+    ap.add_argument("path", nargs="?", help="a specific log file (default: the most recent run)")
+    ap.add_argument("--all", action="store_true", help="combine every run in the log dir")
     ap.add_argument("--judge", type=int, metavar="N", help="LLM-judge N sampled ok lines")
     ap.add_argument("--pipeline", type=int, metavar="N", help="print the last N lines' full per-stage pipeline")
     ap.add_argument("--lang", help="filter to a target_lang")
     ap.add_argument("--label", help="filter to a label substring")
     args = ap.parse_args()
 
-    path = Path(args.path)
-    if not path.exists():
-        print(f"no log at {path} — watch something with the sidecar running first.", file=sys.stderr)
-        return 1
-    rows = load(path)
+    if args.all:
+        files = sorted(LOG_DIR.glob("*.jsonl"), key=lambda p: p.stat().st_mtime)
+        if not files:
+            print(f"no logs in {LOG_DIR} — watch something with the sidecar running first.", file=sys.stderr)
+            return 1
+        rows = [r for p in files for r in load(p)]
+        print(f"loaded {len(files)} run(s) from {LOG_DIR}")
+    else:
+        path = Path(args.path) if args.path else _latest_log()
+        if not path or not path.exists():
+            print(f"no log found in {LOG_DIR} — watch something with the sidecar running first.", file=sys.stderr)
+            return 1
+        print(f"log: {path.name}")
+        rows = load(path)
+
     if args.lang:
         rows = [r for r in rows if r.get("target_lang") == args.lang]
     if args.label:
