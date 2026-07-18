@@ -55,7 +55,7 @@ from audit_log import LOG_DIR
 from glossary import GLOSSARY
 from translate import _system_prompt, _LANG
 from drift_judge import _show_key, _corpus, _corpus_banner, _MIN_SHOW_SAMPLE, _GATE_MIN_SHOWS  # corpus scoping
-from judge_llm import judge_session
+from judge_llm import judge_session, voters, cost_estimate, reset_usage
 
 # --- the arms: framing (Factor A) x clauses (Factor B) ---------------------- #
 # DRAFT — finalize wording before running. Kept minimal; the rule block is shared.
@@ -148,13 +148,13 @@ def _make_arm_translators(lang: str):
     return arms
 
 
-def _score(sess, url, model, provider, votes, temperature, ctx, src, en):
-    """Aggregate GEMBA-MQM over votes -> (median penalty, {confirmed cat: sev})."""
-    maj = votes // 2 + 1
+def _score(sess, url, voter_models, provider, temperature, ctx, src, en):
+    """Aggregate GEMBA-MQM over the voter models -> (median penalty, {confirmed cat: sev})."""
+    maj = len(voter_models) // 2 + 1
     catcount, worst, penalties = collections.Counter(), {}, []
-    for _ in range(votes):
+    for vm in voter_models:
         try:
-            catsev, _notes = _mqm_vote(sess, url, model, ctx, src, en, provider, temperature)
+            catsev, _notes = _mqm_vote(sess, url, vm, ctx, src, en, provider, temperature)
         except Exception:
             continue
         penalties.append(sum(_MQM_WEIGHT[s] for s in catsev.values()))
@@ -177,15 +177,17 @@ def run(rows: list[dict], n_guard: int, n_targeted: int, votes: int, target_lang
         need = "OPENROUTER_API_KEY" if provider == "openrouter" else "GROQ_API_KEY"
         print(f"judge needs {need} for JUDGE_PROVIDER={provider}.", file=sys.stderr)
         return
-    temp = 0.4 if votes > 1 else 0.0
+    voter_models, temp = voters(judge_model, votes)
+    reset_usage()
     translators = _make_arm_translators(lang)
 
     guard = [{**r, "_stratum": "guardrail"} for r in _sample(rows, n_guard, targeted=False)]
     targ = [{**r, "_stratum": "targeted"} for r in _sample(rows, n_targeted, targeted=True)]
     items = guard + targ
-    calls = len(items) * len(ARMS) * (1 + votes)
+    calls = len(items) * len(ARMS) * (1 + len(voter_models))
+    grader = " + ".join(voter_models) if len(set(voter_models)) > 1 else f"{judge_model} x{len(voter_models)}"
     print(f"\npersona A/B — {len(guard)} guardrail + {len(targ)} targeted lines x {len(ARMS)} arms")
-    print(f"  translate model={os.getenv('GROQ_MODEL','qwen/qwen3.6-27b')}  judge={judge_model} via {provider} x{votes} votes")
+    print(f"  translate model={os.getenv('GROQ_MODEL','qwen/qwen3.6-27b')}  judge={grader} via {provider}")
     print(f"  ~{calls} API calls. Paired; McNemar power needs ~30 discordant pairs.\n")
 
     results = []
@@ -199,7 +201,7 @@ def run(rows: list[dict], n_guard: int, n_targeted: int, votes: int, target_lang
                "frame_id": it.get("frame_id"), "source_text": src, "arms": {}}
         for arm, t in translators.items():
             en = t.translate(src, "ch", target_lang, ctx_list, it.get("continuation", False), gloss)
-            pen, conf = _score(sess, url, judge_model, provider, votes, temp, ctx, src, en)
+            pen, conf = _score(sess, url, voter_models, provider, temp, ctx, src, en)
             row["arms"][arm] = {"translation": en, "penalty": pen, "confirmed": conf}
         results.append(row)
 
@@ -208,6 +210,9 @@ def run(rows: list[dict], n_guard: int, n_targeted: int, votes: int, target_lang
         for r in results:
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
     print(f"\nper-line outputs -> {out_path}")
+    ce = cost_estimate()
+    if ce:
+        print(ce)
 
 
 def _arm_summary(sub: list[dict]) -> dict:

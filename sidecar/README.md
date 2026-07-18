@@ -153,10 +153,16 @@ with strong Chinese** — MQM adequacy means reading the source, and llama is a 
 properly and aren't the same family as the Qwen translator (no self-eval / correlated
 blind spots — the run prints a `SELF-EVAL` warning if grader == translator). Votes
 auto-use a small temperature when >1 so they actually vary (temp 0 would make "N
-independent votes" identical). The judge deliberately ignores OCR garble in the
-*source* (that's the OCR stage's job, covered by `--metrics`), so the two passes don't
-double-count. All three judge tools route through `judge_llm.py`, so switching the
-grader is one env change and never touches translation.
+independent votes" identical). Better still, set `JUDGE_MODELS` to a comma-separated
+**panel** (e.g. `deepseek/deepseek-chat,google/gemini-2.5-flash,anthropic/claude-…`):
+one vote per model, so independence comes from *diverse families* — which is the
+documented way to bound judge bias (self-preference runs 10–25% within a family). The
+judge deliberately ignores OCR garble in the *source* (that's the OCR stage's job,
+covered by `--metrics`), so the two passes don't double-count. Every run prints a
+**cost line** (real token counts; OpenRouter's billed cost when available, else a
+rough estimate) — a 40-line × 3-vote audit is ~2¢ on DeepSeek, so treat it as free.
+All three judge tools route through `judge_llm.py`, so switching the grader (or panel)
+is one env change and never touches translation.
 
 ### Drift judge — `drift_judge.py` (cross-line consistency only)
 

@@ -41,7 +41,7 @@ except Exception:
     pass
 
 from audit_log import LOG_DIR
-from judge_llm import complete, judge_session
+from judge_llm import complete, cost_estimate, judge_session, reset_usage, voters
 
 
 def load(path: Path) -> list[dict]:
@@ -181,9 +181,11 @@ def judge(rows: list[dict], n: int) -> None:
         print(f"judge needs {need} for JUDGE_PROVIDER={provider} (repo-root .env).", file=sys.stderr)
         return
     translator_model = os.getenv("GROQ_MODEL", "qwen/qwen3.6-27b")
-    votes = max(1, int(os.getenv("GROQ_JUDGE_VOTES", "3")))  # GEMBA-MQM v2: aggregate independent judgments
-    maj = votes // 2 + 1
-    temp = 0.4 if votes > 1 else 0.0   # votes must VARY to aggregate — temp 0 makes them identical
+    votes = max(1, int(os.getenv("GROQ_JUDGE_VOTES", "3")))
+    voter_models, temp = voters(model, votes)   # JUDGE_MODELS -> diverse panel; else N votes of `model`
+    maj = len(voter_models) // 2 + 1
+    panel = len(set(voter_models)) > 1
+    reset_usage()
 
     pool = [r for r in rows if r.get("status") == "ok" and r.get("translation") and r.get("source_text")]
     if not pool:
@@ -192,11 +194,12 @@ def judge(rows: list[dict], n: int) -> None:
     # Even coverage across the log without Math.random-style bias: stride sample.
     step = max(1, len(pool) // n)
     sample = pool[::step][:n]
-    self_eval = provider == "groq" and model == translator_model
-    print(f"\nGEMBA-MQM: {len(sample)} of {len(pool)} ok lines x {votes} vote(s), grader={model} via {provider}")
-    print(f"  offline pass over the log (~{len(sample)*votes} calls)"
-          + (f", votes @ temp {temp}" if votes > 1 else "")
-          + ("  — SELF-EVAL: grader == translator, biased high; set JUDGE_MODEL / JUDGE_PROVIDER for a real audit" if self_eval else "")
+    self_eval = provider == "groq" and any(vm == translator_model for vm in voter_models)
+    grader = " + ".join(voter_models) if panel else f"{model} x{len(voter_models)}"
+    print(f"\nGEMBA-MQM: {len(sample)} of {len(pool)} ok lines, grader={grader} via {provider}")
+    print(f"  offline pass over the log (~{len(sample)*len(voter_models)} calls)"
+          + ("  — panel: one vote per model" if panel else (f", votes @ temp {temp}" if len(voter_models) > 1 else ""))
+          + ("  — SELF-EVAL: a grader == the translator; biased high" if self_eval else "")
           + "\n")
 
     scored = []
@@ -204,9 +207,9 @@ def judge(rows: list[dict], n: int) -> None:
         ctx = "\n".join(r.get("context_lines") or [])
         src, trn = r["source_text"], r["translation"]
         catcount, worst, notes, penalties = collections.Counter(), {}, {}, []
-        for _ in range(votes):
+        for vm in voter_models:
             try:
-                catsev, vnotes = _mqm_vote(sess, url, model, ctx, src, trn, provider, temp)
+                catsev, vnotes = _mqm_vote(sess, url, vm, ctx, src, trn, provider, temp)
             except Exception:
                 continue  # a dead vote just doesn't count toward the majority
             penalties.append(sum(_MQM_WEIGHT[s] for s in catsev.values()))
@@ -254,6 +257,10 @@ def judge(rows: list[dict], n: int) -> None:
             print(f"        {errs}" + (f"   «{note}»" if note else ""))
     else:
         print("no majority-confirmed errors in the sample.")
+
+    ce = cost_estimate()
+    if ce:
+        print(f"\n{ce}")
 
 
 def metrics(rows: list[dict]) -> None:

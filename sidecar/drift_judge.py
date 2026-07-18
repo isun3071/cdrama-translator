@@ -55,7 +55,7 @@ except Exception:
 
 from audit import load, split_stages, _latest_log
 from audit_log import LOG_DIR
-from judge_llm import complete, judge_session
+from judge_llm import complete, cost_estimate, judge_session, reset_usage, voters
 
 _SEV = {"minor": 1, "major": 5, "critical": 10}
 _CATS = ("cross-speaker-leak", "stale-referent", "register-drift",
@@ -239,11 +239,13 @@ def run(rows: list[dict], n: int, stratified: bool, out_path: Path) -> None:
         need = "OPENROUTER_API_KEY" if provider == "openrouter" else "GROQ_API_KEY"
         print(f"drift judge needs {need} for JUDGE_PROVIDER={provider} (repo-root .env).", file=sys.stderr)
         return
-    if "qwen" in model.lower():
-        print("WARNING: grader is a Qwen model — same family as the translator (self-eval bias).", file=sys.stderr)
     votes = max(1, int(os.getenv("GROQ_DRIFT_VOTES", "3")))
-    maj = votes // 2 + 1
-    temp = 0.4 if votes > 1 else 0.0   # votes must vary to aggregate
+    voter_models, temp = voters(model, votes)   # JUDGE_MODELS -> panel; else N votes of `model`
+    maj = len(voter_models) // 2 + 1
+    panel = len(set(voter_models)) > 1
+    if any("qwen" in m.lower() for m in voter_models):
+        print("WARNING: a grader is a Qwen model — same family as the translator (self-eval bias).", file=sys.stderr)
+    reset_usage()
 
     tr, disp = split_stages(rows)
     ok = [r for r in tr if r.get("status") == "ok" and r.get("source_text")]
@@ -266,8 +268,9 @@ def run(rows: list[dict], n: int, stratified: bool, out_path: Path) -> None:
     mode = "STRATIFIED (risky windows; over-estimates frequency — SHAPE only)" if stratified \
         else "RANDOM (population GATE rate)"
     print(f"\ndrift judge — {mode}")
-    print(f"  {len(sample)} of {len(targets)} eligible windows x {votes} vote(s), grader={model} via {provider}")
-    print(f"  ~{len(sample)*votes} calls, offline. Judge-flagged, NOT verified — confirm by hand.\n")
+    grader = " + ".join(voter_models) if panel else f"{model} x{len(voter_models)}"
+    print(f"  {len(sample)} of {len(targets)} eligible windows, grader={grader} via {provider}")
+    print(f"  ~{len(sample)*len(voter_models)} calls, offline. Judge-flagged, NOT verified — confirm by hand.\n")
 
     # Accumulate per SHOW (never collapse straight to aggregate).
     stats: dict = collections.defaultdict(lambda: {
@@ -281,9 +284,9 @@ def run(rows: list[dict], n: int, stratified: bool, out_path: Path) -> None:
         worst: dict = {}
         scopes: dict = collections.defaultdict(collections.Counter)
         ran = 0
-        for _ in range(votes):
+        for vm in voter_models:
             try:
-                v = _drift_vote(sess, url, model, window, provider, temp)
+                v = _drift_vote(sess, url, vm, window, provider, temp)
             except Exception:
                 continue
             ran += 1
@@ -320,6 +323,9 @@ def run(rows: list[dict], n: int, stratified: bool, out_path: Path) -> None:
             })
 
     _report_drift(dict(stats), confirmed_rows, stratified, out_path)
+    ce = cost_estimate()
+    if ce:
+        print(ce)
 
 
 def _report_drift(stats: dict, confirmed_rows: list, stratified: bool, out_path: Path) -> None:
