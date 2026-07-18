@@ -16,6 +16,8 @@ from typing import Protocol
 from config import (
     OCR_DARK_MAX,
     OCR_MASK,
+    OCR_MASK_ADAPTIVE,
+    OCR_MASK_FALLBACK_CONF,
     OCR_MASK_PAD,
     OCR_STROKE_RADIUS,
     OCR_WHITE_MIN,
@@ -155,8 +157,20 @@ class RapidOcrEngine:
         )
         if img is None:
             return OcrRead("", 0.0)
-        if OCR_MASK:
-            img = mask_for_ocr(img)
+        if not OCR_MASK:
+            return self._recognize(img)
+        read = self._recognize(mask_for_ocr(img))
+        # Adaptive fallback (§4): masking cleans clutter but can hurt thin-stroke /
+        # low-contrast text. When the masked read is weak, try the RAW crop too and
+        # keep whichever the recognizer trusted more. The second pass runs only on
+        # weak frames, so the common case still costs one OCR. Behind the seam.
+        if OCR_MASK_ADAPTIVE and read.confidence < OCR_MASK_FALLBACK_CONF:
+            raw = self._recognize(img)
+            if raw.text and raw.confidence > read.confidence:
+                return raw
+        return read
+
+    def _recognize(self, img) -> OcrRead:
         result, _elapse = self._engine(img)
         if not result:
             return OcrRead("", 0.0)

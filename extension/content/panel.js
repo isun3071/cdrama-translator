@@ -241,6 +241,25 @@ if (!window.CDT.Panel) {
       langSel.addEventListener("change", () => this.cb.onTargetLang(langSel.value));
       trow.appendChild(langSel);
 
+      // Register lean (feature 3): a default/tie-breaker, not a costume — the service
+      // never overrides a register the source itself sets. "" = faithful (default).
+      const toneSel = document.createElement("select");
+      toneSel.className = "sel";
+      toneSel.title = "register lean (never overrides the source's own tone)";
+      for (const [code, name] of [
+        ["", "tone: auto"], ["casual", "casual"], ["formal", "formal"],
+        ["literary", "literary"], ["playful", "playful"], ["romantic", "romantic"],
+        ["business", "business"],
+      ]) {
+        const o = document.createElement("option");
+        o.value = code;
+        o.textContent = name;
+        if (code === (this.cfg.tone || "")) o.selected = true;
+        toneSel.appendChild(o);
+      }
+      toneSel.addEventListener("change", () => { this.cfg.tone = toneSel.value; });
+      trow.appendChild(toneSel);
+
       const biLabel = this._el("label", "chkbox");
       biLabel.title = "bilingual overlay (show source too)";
       const bi = document.createElement("input");

@@ -43,6 +43,10 @@ class TranslateRequest(BaseModel):
     # prefilled once per session rather than re-billed per line, which is what makes a
     # long (episode + show) summary affordable. Empty = off.
     context_note: str = Field(default="", max_length=10000)
+    # Optional register lean (casual/formal/literary/playful/romantic/business). A
+    # default and tie-breaker for ambiguous lines only — the service never overrides a
+    # register the source itself sets. Session-static -> cached prefix. Empty = faithful.
+    tone: str = Field(default="", max_length=20)
     # Optional free-text label (the extension sends the page title) so the audit
     # log can group lines by episode. Logging only; never affects translation.
     label: str = Field(default="", max_length=200)

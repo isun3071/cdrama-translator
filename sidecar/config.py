@@ -20,3 +20,13 @@ OCR_STROKE_RADIUS = 3     # a fill pixel is kept only if dark stroke is within t
 # Keep 0. A black border on the masked image makes PP-OCR's DBNet detection
 # post-processing explode: measured ~40ms/frame at pad=0 vs ~1200ms at pad>=6.
 OCR_MASK_PAD = 0
+
+# Masking cleans moving clutter but can hurt thin-stroke / low-contrast text — it
+# once made the confidence gate (not clutter) the thing dropping correct reads like
+# 走吧@0.54. Adaptive fallback: when the masked read is weak (< fallback conf), also
+# OCR the RAW crop and keep whichever the recognizer was more confident about. The
+# second pass runs only on weak frames, so the common case still costs one OCR. This
+# lives entirely behind the OCR seam — the extension never knows. Set
+# OCR_MASK_ADAPTIVE=False to always trust the mask; OCR_MASK=False skips masking (raw).
+OCR_MASK_ADAPTIVE = True
+OCR_MASK_FALLBACK_CONF = 0.65   # masked read below this also tries raw

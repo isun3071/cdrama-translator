@@ -29,6 +29,7 @@ class Translator(Protocol):
         continuation: bool,
         glossary: dict[str, str] | None = None,
         context_note: str = "",
+        tone: str = "",
     ) -> str:
         """Translate `text`. context_lines are the recent SOURCE lines, passed as
         reference for context-aware decoding (6a/6b). When continuation is true,
@@ -53,6 +54,7 @@ class MockTranslator:
         continuation: bool = False,
         glossary: dict[str, str] | None = None,
         context_note: str = "",
+        tone: str = "",
     ) -> str:
         if not text:
             return ""
@@ -60,7 +62,8 @@ class MockTranslator:
         cont = "·cont" if continuation else ""
         gl = f"·gl{len(glossary)}" if glossary else ""
         nt = "·note" if context_note else ""
-        return f"[{target_lang}·mock{ctx}{cont}{gl}{nt}] {text}"
+        tn = f"·{tone}" if tone else ""
+        return f"[{target_lang}·mock{ctx}{cont}{gl}{nt}{tn}] {text}"
 
 
 # --- Groq provider --------------------------------------------------------- #
@@ -71,6 +74,18 @@ _LANG = {
     "ko": "Korean", "de": "German", "ru": "Russian", "vi": "Vietnamese",
 }
 _GROQ_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions"
+
+# Register LEAN, not costume: a default/tie-breaker for lines whose own tone leaves
+# latitude — never an override of a register the source itself sets. Unknown/empty
+# tone => faithful (no injection).
+_TONE = {
+    "casual": "casual, colloquial",
+    "formal": "formal, elevated",
+    "literary": "literary and period-appropriate",
+    "playful": "light and playful",
+    "romantic": "warm and romantic",
+    "business": "crisp and professional",
+}
 
 
 def _system_prompt(lang_name: str) -> str:
@@ -139,6 +154,7 @@ class GroqTranslator:
         continuation: bool = False,
         glossary: dict[str, str] | None = None,
         context_note: str = "",
+        tone: str = "",
     ) -> str:
         if not text:
             return ""
@@ -154,6 +170,17 @@ class GroqTranslator:
                 "(reference only — use it to disambiguate names, register and references; "
                 "never translate it or copy its wording into your output):\n"
                 + context_note.strip()
+            )
+        tone_desc = _TONE.get(tone)
+        if tone_desc:
+            # Register lean (session-static -> cached prefix). Guardrailed: a default
+            # and tie-breaker only, never an override of the source's own register.
+            system = (
+                system + f"\n\nRegister preference: where a line's own tone leaves room, "
+                f"lean toward a {tone_desc} register in the {lang_name}. This is an overall "
+                "default and a tie-breaker for ambiguous lines only — never override the "
+                "register the source itself sets (keep a solemn, blunt, ironic or formal line "
+                "as it is)."
             )
         ctx = list(context_lines or [])
         if continuation and ctx:

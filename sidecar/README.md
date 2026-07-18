@@ -33,6 +33,15 @@ on the masked image makes DBNet detection explode (~40ms → ~1200ms, so
 lines score low and masking made the gate — not clutter — the thing dropping
 correct reads (走吧 @ 0.54).
 
+**Adaptive fallback** (`OCR_MASK_ADAPTIVE=True`, `OCR_MASK_FALLBACK_CONF=0.65`)
+handles the other side of that trade: masking helps against clutter but can hurt
+thin-stroke / low-contrast text. So when the masked read comes back weak (below the
+fallback conf), the engine also OCRs the **raw** crop and keeps whichever the
+recognizer trusted more. The second pass runs only on weak frames, so the common
+case still costs one OCR. It's entirely behind the OCR seam — the extension never
+knows, and Shape A can mirror or drop it freely. `OCR_MASK=False` still skips
+masking altogether (raw only).
+
 **Translation is real now.** `GroqTranslator` (translate.py) calls Groq's
 chat-completions API. `make_translator()` picks Groq when `GROQ_API_KEY` is set
 (loaded from the repo-root `.env`), else the mock; `CDT_TRANSLATOR=mock` forces
@@ -282,7 +291,8 @@ POST /translate
 { "frames": ["<b64 png>", ...1-3], "source_lang": "ch", "target_lang": "en",
   "frame_id": 4821, "last_shipped_text": "<what the extension last displayed>",
   "context_lines": ["<prev source line>", ...last 2-3 hanzi lines],
-  "continuation": false, "context_note": "<optional show/episode background>" }
+  "continuation": false, "context_note": "<optional show/episode background>",
+  "tone": "<optional register lean: casual|formal|literary|playful|romantic|business>" }
 
 -> { "frame_id": 4821, "status": "ok|no_text|duplicate|low_confidence",
      "source_text": "<hanzi>", "translation": "<target>", "confidence": 0.94,

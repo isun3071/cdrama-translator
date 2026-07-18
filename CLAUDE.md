@@ -42,6 +42,7 @@ Request (extension -> service):
   "context_lines": ["<prev source line>", "<prev-1 source line>"],
   "continuation": false,
   "context_note": "<optional user-supplied show/episode background — reference only>",
+  "tone": "<optional register lean: casual|formal|literary|playful|romantic|business>",
   "label": "<page title, optional — for the audit log only>"
 }
 ```
@@ -57,6 +58,11 @@ service translates only the current line.
 register, plot). The service injects it as **reference only** — a decoding aid to
 disambiguate names/register/references, never translated or echoed into the
 output. Static per session, so it lands in the cacheable prefix. Empty = off.
+
+`tone` is an optional register **lean**, not a costume: a default and tie-breaker
+for lines whose own tone leaves latitude. The service must never let it override a
+register the source itself sets (a solemn or blunt line stays that way). Also
+session-static → cached prefix. Empty = faithful (the default).
 
 Response (service -> extension):
 ```json
