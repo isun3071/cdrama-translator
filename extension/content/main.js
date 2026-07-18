@@ -406,6 +406,7 @@ if (!window.CDT.__mainLoaded) {
         // otherwise the last 2-3 lines as reference (6b).
         contextLines: cont ? this.sentenceLines.slice(-3) : this.sourceHistory.slice(-3),
         continuation: cont,
+        contextNote: this.cfg.contextNote || "",  // optional show/episode background
         label: document.title || location.hostname || "", // episode grouping in the audit log
         videoTime: (this.capture.video && this.capture.video.currentTime) || 0,
       });

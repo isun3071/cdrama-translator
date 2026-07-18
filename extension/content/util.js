@@ -31,6 +31,7 @@ if (!window.CDT.util) {
     // Translation / overlay (session 3)
     translateEnabled: true, // dispatch to the sidecar on line start
     targetLang: "en",       // any target language; the point of the product
+    contextNote: "",        // optional user-supplied show/episode background (context_note)
     frameSpacingMs: 100,    // spacing of the 3 OCR frames (t, t+100, t+200)
     pngMaxW: 1600,          // cap width of the PNG frames sent to OCR
     overlayBilingual: false,// pure rendering toggle (invariant 2)

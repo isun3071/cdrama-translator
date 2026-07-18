@@ -281,7 +281,8 @@ misread 要→娶), a duplicate (dedup, no re-translation), a silent box
 POST /translate
 { "frames": ["<b64 png>", ...1-3], "source_lang": "ch", "target_lang": "en",
   "frame_id": 4821, "last_shipped_text": "<what the extension last displayed>",
-  "context_lines": ["<prev source line>", ...last 2-3 hanzi lines] }
+  "context_lines": ["<prev source line>", ...last 2-3 hanzi lines],
+  "continuation": false, "context_note": "<optional show/episode background>" }
 
 -> { "frame_id": 4821, "status": "ok|no_text|duplicate|low_confidence",
      "source_text": "<hanzi>", "translation": "<target>", "confidence": 0.94,

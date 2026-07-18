@@ -61,6 +61,13 @@ if (!window.CDT.Panel) {
     button.on { background: #1e4023; border-color: #2f6b3e; color: #8fe0a2; }
     select.sel { background: #262a36; color: #cfd3dd; border: 1px solid #3a3f4f;
                  border-radius: 5px; padding: 3px 6px; font: inherit; cursor: pointer; }
+    .ctxnote { margin: 6px 0 2px; }
+    textarea.ctxta {
+      width: 100%; background: #0b0c10; color: #cfd3dd;
+      border: 1px solid #3a3f4f; border-radius: 5px; padding: 5px 7px;
+      font: inherit; resize: vertical; user-select: text; min-height: 34px;
+    }
+    textarea.ctxta:focus { outline: none; border-color: #5a7de8; }
     label.chkbox { display: flex; align-items: center; gap: 4px; color: #99a; cursor: pointer; }
     .slider { display: flex; align-items: center; gap: 7px; margin: 4px 0; }
     .slider label { width: 88px; color: #99a; }
@@ -146,6 +153,10 @@ if (!window.CDT.Panel) {
       this.chip = this._el("span", "chip idle", "idle");
       hdr.appendChild(this.chip);
       hdr.appendChild(this._el("span", "spacer"));
+      this.minBtn = this._el("span", "x", "–");
+      this.minBtn.title = "minimize";
+      this.minBtn.addEventListener("click", () => this._toggleMin());
+      hdr.appendChild(this.minBtn);
       const x = this._el("span", "x", "✕");
       x.addEventListener("click", () => this.cb.onClose());
       hdr.appendChild(x);
@@ -236,6 +247,22 @@ if (!window.CDT.Panel) {
       trow.appendChild(biLabel);
       body.appendChild(trow);
 
+      // Show/episode context (optional): user-supplied background handed to the
+      // service as reference for every line (context_note). Empty = off. Written
+      // straight onto the shared cfg, like the sliders, and read at send time.
+      const ctxWrap = this._el("div", "ctxnote");
+      ctxWrap.appendChild(this._el("div", "cv-label", "show / episode context (optional)"));
+      this.ctxNote = document.createElement("textarea");
+      this.ctxNote.className = "ctxta";
+      this.ctxNote.rows = 2;
+      this.ctxNote.maxLength = 1000;
+      this.ctxNote.placeholder =
+        "e.g. 1960s period military drama, formal register. Characters: 傅正川=Fu Zhengchuan, 彩兰=Cailan.";
+      this.ctxNote.value = this.cfg.contextNote || "";
+      this.ctxNote.addEventListener("input", () => { this.cfg.contextNote = this.ctxNote.value; });
+      ctxWrap.appendChild(this.ctxNote);
+      body.appendChild(ctxWrap);
+
       this.fbBtn = this._el("button", "warn", "Enable screen-capture fallback");
       this.fbBtn.style.display = "none";
       this.fbBtn.style.marginBottom = "4px";
@@ -258,8 +285,18 @@ if (!window.CDT.Panel) {
       this.logEl = this._el("div", "log");
       body.appendChild(this.logEl);
 
+      this.body = body;
       p.appendChild(body);
       return p;
+    }
+
+    /* Collapse to just the header bar (status chip stays visible, still draggable).
+     * Pure UI: never touches the detector or the overlay — translation keeps running. */
+    _toggleMin() {
+      this.minimized = !this.minimized;
+      this.body.style.display = this.minimized ? "none" : "";
+      this.minBtn.textContent = this.minimized ? "▢" : "–";
+      this.minBtn.title = this.minimized ? "restore" : "minimize";
     }
 
     _mkSlider(label, key, min, max) {

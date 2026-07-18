@@ -36,6 +36,11 @@ class TranslateRequest(BaseModel):
     # sentence (re-translation / screen-rewriting, 6a). Default: translate this
     # line alone with context_lines as reference.
     continuation: bool = False
+    # Optional user-supplied background about the show/episode (names, register,
+    # plot), handed to the service as reference for every line — decoding aid, not
+    # content (the service injects it as "reference only, do not translate/inject").
+    # Static per session, so it sits in the cacheable prefix. Empty = off.
+    context_note: str = Field(default="", max_length=1000)
     # Optional free-text label (the extension sends the page title) so the audit
     # log can group lines by episode. Logging only; never affects translation.
     label: str = Field(default="", max_length=200)

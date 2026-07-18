@@ -123,6 +123,7 @@ def _audit_entry(req: TranslateRequest, resp: TranslateResponse, raw_reads: list
         "confidence": resp.confidence,      # mean of the contributing reads
         "context_lines": req.context_lines,
         "continuation": req.continuation,   # candidate-to-bridge flag (↳cont)
+        "context_note": req.context_note[:200],  # user-supplied background (truncated; session-constant)
         "glossary": glossary,               # terms pinned for this line, if any (6b)
         "translation": resp.translation,
         "duplicate": resp.duplicate,
@@ -187,7 +188,7 @@ def translate(req: TranslateRequest) -> TranslateResponse:
 
         gloss = GLOSSARY.matching(voted, req.context_lines, req.label)
         resp.translation = translator.translate(
-            voted, req.source_lang, req.target_lang, req.context_lines, req.continuation, gloss
+            voted, req.source_lang, req.target_lang, req.context_lines, req.continuation, gloss, req.context_note
         )
         # A real, shown line: assign its place in the episode + sentence group.
         line_seq, group_id = _next_seq(ep_id, req.continuation)

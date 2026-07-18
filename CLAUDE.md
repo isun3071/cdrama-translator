@@ -41,6 +41,7 @@ Request (extension -> service):
   "last_shipped_text": "<what the extension last displayed>",
   "context_lines": ["<prev source line>", "<prev-1 source line>"],
   "continuation": false,
+  "context_note": "<optional user-supplied show/episode background — reference only>",
   "label": "<page title, optional — for the audit log only>"
 }
 ```
@@ -51,6 +52,11 @@ translations. `continuation` is true when the extension judges this line
 completes the previous one (split sentence): the service then renders
 context_lines + this line as one sentence (re-translation, 6a). Otherwise the
 service translates only the current line.
+
+`context_note` is optional user-typed background about the show/episode (names,
+register, plot). The service injects it as **reference only** — a decoding aid to
+disambiguate names/register/references, never translated or echoed into the
+output. Static per session, so it lands in the cacheable prefix. Empty = off.
 
 Response (service -> extension):
 ```json

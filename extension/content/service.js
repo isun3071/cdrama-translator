@@ -17,7 +17,7 @@ if (!window.CDT.Service) {
     /* frames: array of base64 PNG strings (1-3, spaced t/t+100/t+200).
      * Returns { ok: true, data: <TranslateResponse> } or
      *         { ok: false, error, detail? }. Never throws. */
-    async translate({ frames, sourceLang, targetLang, frameId, lastShippedText, contextLines, continuation, label, videoTime }) {
+    async translate({ frames, sourceLang, targetLang, frameId, lastShippedText, contextLines, continuation, contextNote, label, videoTime }) {
       try {
         const res = await browser.runtime.sendMessage({
           type: "cdt-translate",
@@ -29,6 +29,7 @@ if (!window.CDT.Service) {
             last_shipped_text: lastShippedText || "",
             context_lines: contextLines || [],
             continuation: !!continuation,
+            context_note: (contextNote || "").slice(0, 1000),
             label: (label || "").slice(0, 200),
             video_time: videoTime || 0,
           },

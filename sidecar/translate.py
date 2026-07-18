@@ -28,11 +28,14 @@ class Translator(Protocol):
         context_lines: list[str],
         continuation: bool,
         glossary: dict[str, str] | None = None,
+        context_note: str = "",
     ) -> str:
         """Translate `text`. context_lines are the recent SOURCE lines, passed as
         reference for context-aware decoding (6a/6b). When continuation is true,
         those lines and `text` are one split sentence and the provider returns the
-        combined-sentence translation (re-translation / screen-rewriting, 6a)."""
+        combined-sentence translation (re-translation / screen-rewriting, 6a).
+        context_note is optional user-supplied show/episode background — reference
+        only, never translated or echoed."""
         ...
 
 
@@ -49,13 +52,15 @@ class MockTranslator:
         context_lines: list[str] | None = None,
         continuation: bool = False,
         glossary: dict[str, str] | None = None,
+        context_note: str = "",
     ) -> str:
         if not text:
             return ""
         ctx = f"·ctx{len(context_lines)}" if context_lines else ""
         cont = "·cont" if continuation else ""
         gl = f"·gl{len(glossary)}" if glossary else ""
-        return f"[{target_lang}·mock{ctx}{cont}{gl}] {text}"
+        nt = "·note" if context_note else ""
+        return f"[{target_lang}·mock{ctx}{cont}{gl}{nt}] {text}"
 
 
 # --- Groq provider --------------------------------------------------------- #
@@ -133,6 +138,7 @@ class GroqTranslator:
         context_lines: list[str] | None = None,
         continuation: bool = False,
         glossary: dict[str, str] | None = None,
+        context_note: str = "",
     ) -> str:
         if not text:
             return ""
@@ -174,6 +180,14 @@ class GroqTranslator:
             # present in this line are passed in, so this stays 0-2 items.
             pins = "; ".join(f"{zh} = {en}" for zh, en in glossary.items())
             user = f"Use these fixed translations verbatim wherever the term appears: {pins}.\n" + user
+        if context_note:
+            # User-supplied show/episode background (feature 1). Reference only —
+            # leads the message as labeled background, never content to emit.
+            user = (
+                "Background about this show/episode (reference only — do NOT translate it or "
+                "copy its wording into your output; use it to disambiguate names, register and "
+                f"references):\n{context_note.strip()}\n\n" + user
+            )
         body = {
             "model": self.model,
             "messages": [
