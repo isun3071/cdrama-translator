@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hashlib
 import logging
 import time
 from datetime import datetime, timezone
@@ -66,6 +67,29 @@ def _decode(frame_b64: str) -> bytes:
         return b""
 
 
+# Per-episode sequencing so the audit log can be reassembled into an ordered
+# script (the teacher's full context for distillation) and split sentences can be
+# regrouped. episode_id is a stable hash of the page label, so lines of the same
+# video group across runs; line_seq/sentence_group_id are per-process counters.
+_ep_state: dict[str, dict] = {}
+
+
+def _episode_id(label: str) -> str:
+    base = (label or "").strip()
+    return hashlib.sha1(base.encode("utf-8")).hexdigest()[:12] if base else "unknown"
+
+
+def _next_seq(ep_id: str, continuation: bool) -> tuple[int, int]:
+    """Advance the per-episode line counter, and the sentence-group counter only
+    when this line does NOT continue the previous one (continuation=False starts a
+    new sentence). So a split sentence's fragments share one sentence_group_id."""
+    st = _ep_state.setdefault(ep_id, {"seq": 0, "group": 0})
+    if not continuation:
+        st["group"] += 1
+    st["seq"] += 1
+    return st["seq"], st["group"]
+
+
 @app.get("/health")
 def health() -> dict:
     return {
@@ -79,7 +103,8 @@ def health() -> dict:
 _PROVIDER = {"GroqTranslator": "groq", "MockTranslator": "mock", "OllamaTranslator": "ollama"}
 
 
-def _audit_entry(req: TranslateRequest, resp: TranslateResponse, raw_reads: list, glossary: dict, latency_ms: int) -> dict:
+def _audit_entry(req: TranslateRequest, resp: TranslateResponse, raw_reads: list, glossary: dict,
+                 latency_ms: int, ep_id: str, line_seq: int | None, group_id: int | None) -> dict:
     # Per-stage record, so a bad output can be traced to the stage it went wrong:
     # raw per-frame OCR reads -> voted source_text -> context/continuation -> translation.
     return {
@@ -87,6 +112,9 @@ def _audit_entry(req: TranslateRequest, resp: TranslateResponse, raw_reads: list
         "ts": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
         "video_time": req.video_time,
         "label": req.label,
+        "episode_id": ep_id,          # stable hash of label — groups a video across runs
+        "line_seq": line_seq,         # per-episode monotonic order (ok lines only; else null)
+        "sentence_group_id": group_id,  # fragments of one split sentence share this (6a)
         "frame_id": resp.frame_id,
         "target_lang": req.target_lang,
         "status": resp.status,
@@ -116,6 +144,7 @@ def log_display(ev: DisplayEvent) -> dict:
         "video_time": ev.video_time,
         "visible_ms": ev.visible_ms,
         "outcome": ev.outcome,
+        "final_text": ev.final_text,   # the text actually shown for this frame_id (post-revision)
         "label": ev.label,
     })
     return {"ok": True}
@@ -127,6 +156,9 @@ def translate(req: TranslateRequest) -> TranslateResponse:
     resp = TranslateResponse(frame_id=req.frame_id)
     raw_reads: list = []
     gloss: dict = {}
+    ep_id = _episode_id(req.label)
+    line_seq: int | None = None      # assigned only when the line is actually shown (ok)
+    group_id: int | None = None
     try:
         reads = ocr.read_frames([_decode(f) for f in req.frames])
         raw_reads = [{"text": r.text, "conf": round(r.confidence, 3)} for r in reads]
@@ -157,6 +189,8 @@ def translate(req: TranslateRequest) -> TranslateResponse:
         resp.translation = translator.translate(
             voted, req.source_lang, req.target_lang, req.context_lines, req.continuation, gloss
         )
+        # A real, shown line: assign its place in the episode + sentence group.
+        line_seq, group_id = _next_seq(ep_id, req.continuation)
         resp.status = "ok"
         return resp
     except Exception:
@@ -167,5 +201,6 @@ def translate(req: TranslateRequest) -> TranslateResponse:
     finally:
         # Every path (incl. the early returns above) is audited — the finally
         # runs before the function actually returns.
-        audit_log.append(_audit_entry(req, resp, raw_reads, gloss, round((time.perf_counter() - t0) * 1000)))
+        audit_log.append(_audit_entry(req, resp, raw_reads, gloss,
+                                      round((time.perf_counter() - t0) * 1000), ep_id, line_seq, group_id))
     return resp

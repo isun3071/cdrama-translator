@@ -68,7 +68,7 @@ Division of labor: the **service** owns OCR, the majority vote, and dedup (they 
 
 ## Invariants (must always hold)
 
-1. **Scope: personal use, no redistribution, in-the-clear video only.** Do not build features that target DRM-protected premium platforms or that export/redistribute translated subtitle files. The direct `<video>` canvas grab returning black on DRM is a *feature* of this boundary, not a bug to defeat.
+1. **Scope: personal use, no redistribution, in-the-clear video only.** Do not build features that target DRM-protected premium platforms or that export/redistribute translated subtitle files. The direct `<video>` canvas grab returning black on DRM is a *feature* of this boundary, not a bug to defeat. **This scope is inherited by any model distilled/fine-tuned from the audit log:** its training targets are translations derived from copyrighted burned-in subtitles, so the student model is personal-use, **not a public deliverable — the extension ships, the model does not.** Capture this before, not after, distillation work.
 2. **Never throw away `source_text`.** Both source and translation cross the contract and reach render. Bilingual overlay must stay a pure rendering toggle, never a re-architecture.
 3. **Bounded lag, never accumulating.** The product promise is a fixed short delay that never grows, not zero lag. Enforce with drop-don't-queue: if a newer line is already on screen when an older translation returns, drop the old one. A translation must always belong to a line currently visible.
 4. **Player-agnostic.** No per-platform integration code. The tool points a box at pixels; it must not care whether the player is YouTube, Youku, Rumble, bilibili, or a local file.

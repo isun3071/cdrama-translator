@@ -419,6 +419,8 @@ if (!window.CDT.__mainLoaded) {
         // exactly the kind of gap worth auditing.
         CDT.Service.logDisplay({
           frame_id: frameId, video_time: 0, visible_ms: 0, outcome: "dropped",
+          // the good translation that never got shown (superseded) — worth having
+          final_text: (res.ok && res.data && res.data.translation ? res.data.translation : "").slice(0, 500),
           label: (document.title || "").slice(0, 200),
         });
         this._log("dropped stale translation (superseded by newer line)", "info");
@@ -481,6 +483,7 @@ if (!window.CDT.__mainLoaded) {
       this.overlayHanzi = hanziCount || 0;
       this.overlayFrameId = frameId != null ? frameId : null;
       this.overlayVideoTime = (this.capture.video && this.capture.video.currentTime) || 0;
+      this.overlayText = (content && content.translation) || ""; // final shown text for this frame_id
       clearTimeout(this.overlayClearTimer);
       this.overlayClearTimer = null;
       if (this.detector.state !== "active") {
@@ -497,6 +500,7 @@ if (!window.CDT.__mainLoaded) {
         video_time: this.overlayVideoTime,
         visible_ms: Math.round(performance.now() - this.overlayShownAt),
         outcome,
+        final_text: (this.overlayText || "").slice(0, 500),
         label: (document.title || "").slice(0, 200),
       });
       this.overlayFrameId = null;

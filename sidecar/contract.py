@@ -56,6 +56,12 @@ class DisplayEvent(BaseModel):
     visible_ms: int = Field(default=0, ge=0)
     outcome: Literal["expired", "preempted", "revised", "replaced", "dropped", "cleared"] = "expired"
     label: str = Field(default="", max_length=200)
+    # The translation actually on screen for this frame_id when it finalized —
+    # i.e. the final rendered text AFTER any continuation revision/tail-masking,
+    # not an intermediate. Logging only; lets the audit recover the canonical
+    # shown line per sentence group (distillation target). Empty for a line that
+    # was dropped before it showed carries the translation that never made it up.
+    final_text: str = Field(default="", max_length=500)
 
 
 class TranslateResponse(BaseModel):
