@@ -24,7 +24,13 @@ Two samples, different jobs (do not conflate):
 Grader defaults to a NON-Qwen model (the translator is Qwen; avoid self-eval).
 Votes are aggregated (majority-confirmed) like GEMBA-MQM.
 
-    python drift_judge.py [log] [--sample N] [--stratified] [--votes V]
+CORPUS GATE: a number from ONE episode fits that episode, not the phenomenon. The
+tool reports PER SHOW before aggregating and DEFERS if per-show rates diverge >2x;
+below 3 shows it banners the run as WIRING VALIDATION ONLY, not evidence. Feed the
+broader corpus with multiple logs or --all, and reserve a validation episode with
+--holdout so you can tell whether a fix generalizes.
+
+    python drift_judge.py [log ...] [--all] [--holdout SUBSTR] [--sample N] [--stratified] [--votes V]
     env: GROQ_DRIFT_MODEL (default llama-3.3-70b-versatile), GROQ_DRIFT_VOTES (=3)
 
 Confirmed instances are printed with their full window AND written to
@@ -56,6 +62,13 @@ _CATS = ("cross-speaker-leak", "stale-referent", "register-drift",
 _SCOPE_CATS = {"cross-speaker-leak", "stale-referent"}  # these must name a source_scope
 _SCOPES = ("immediate-neighbor", "scene-level")
 _PRON = re.compile(r"[他她它你我咱您]|们")
+
+# Corpus gate — guard against a single episode (or stray-tab noise) passing as a
+# corpus. A show counts only if it clears _GATE_MIN_LINES; a per-show rate enters
+# the divergence check only with _MIN_SHOW_SAMPLE judged items behind it.
+_GATE_MIN_SHOWS = 3
+_GATE_MIN_LINES = 30
+_MIN_SHOW_SAMPLE = 8
 
 _SYS = (
     "You audit a STREAMING Chinese->English subtitle translator for CROSS-LINE "
@@ -124,6 +137,67 @@ def _risky(row: dict) -> bool:
     if row.get("continuation"):
         return True
     return bool(_PRON.search(" ".join(row.get("context_lines") or [])))
+
+
+# --- corpus scoping (measure across shows, never one episode) ---------------- #
+def _show_key(label: str) -> str:
+    """Best-effort SHOW (series) identity from the page label, so episodes of one
+    show group together. Prefers the 《...》 title; else the text before a 第N集
+    marker or a separator. Heuristic — a real multi-show corpus can be spot-checked
+    against this in the per-show table."""
+    if not label:
+        return "unknown"
+    m = re.search(r"《([^》]+)》", label)
+    if m:
+        return m.group(1).strip()
+    s = re.split(r"第\s*\d+\s*集|[|｜\-]", label)[0].strip()
+    return s[:40] or "unknown"
+
+
+def _corpus(paths: list[str], use_all: bool, holdout: str | None) -> tuple[list[dict], list[Path]]:
+    if use_all:
+        files = sorted(LOG_DIR.glob("*.jsonl"), key=lambda p: p.stat().st_mtime)
+    elif paths:
+        files = [Path(p) for p in paths]
+    else:
+        lp = _latest_log()
+        files = [lp] if lp else []
+    files = [f for f in files if f and f.exists()]
+    rows: list[dict] = []
+    for f in files:
+        rows += load(f)
+    if holdout:  # reserve a validation episode: never used for the pass
+        rows = [r for r in rows if holdout not in (r.get("label") or "")]
+    return rows, files
+
+
+def _corpus_banner(rows: list[dict], files: list[Path], holdout: str | None) -> None:
+    tr = [r for r in rows if r.get("stage", "translate") == "translate" and r.get("status") == "ok"]
+    shows = collections.Counter(_show_key(r.get("label", "")) for r in tr)
+    substantial = [sh for sh, c in shows.items() if c >= _GATE_MIN_LINES]
+    eps = len({(r.get("episode_id") or r.get("label")) for r in tr})
+    print(f"corpus: {len(files)} file(s), {len(tr)} ok lines, ~{eps} episode(s), "
+          f"{len(substantial)} substantial show(s) of {len(shows)}"
+          + (f"   (holdout '{holdout}' excluded)" if holdout else ""))
+    for sh, c in shows.most_common():
+        mark = "" if c >= _GATE_MIN_LINES else f"  (incidental <{_GATE_MIN_LINES} lines — ignored for the gate)"
+        print(f"    {sh[:40]:40s} {c} lines{mark}")
+    if len(substantial) < _GATE_MIN_SHOWS:
+        print(f"  !! BELOW the measurement gate: {len(substantial)} substantial show(s), need "
+              f">={_GATE_MIN_SHOWS} (+ >=2 genres / >=5 episodes / 1 held out).")
+        print("     This run is WIRING VALIDATION ONLY, not evidence.")
+    print()
+
+
+def _divergence(rates: list) -> str | None:
+    """>2x spread across shows (or any show at 0 while another >0) => defer."""
+    live = [r for r in rates if r is not None]
+    if len(live) < 2:
+        return None
+    hi, lo = max(live), min(live)
+    if (lo == 0 and hi > 0) or (lo > 0 and hi / lo > 2):
+        return f"{hi:.0%} vs {lo:.0%}"
+    return None
 
 
 def _drift_vote(sess, model: str, window: list[dict]) -> dict:
@@ -197,13 +271,17 @@ def run(rows: list[dict], n: int, stratified: bool, out_path: Path) -> None:
     print(f"  {len(sample)} of {len(targets)} eligible windows x {votes} vote(s), grader={model}")
     print(f"  ~{len(sample)*votes} calls, offline. Judge-flagged, NOT verified — confirm by hand.\n")
 
+    # Accumulate per SHOW (never collapse straight to aggregate).
+    stats: dict = collections.defaultdict(lambda: {
+        "judged": 0, "flagged": 0, "cats": collections.Counter(),
+        "scopes": collections.Counter(), "sevs": collections.Counter()})
     confirmed_rows = []
     for ep, i in sample:
+        show = _show_key(ep[i].get("label", ""))
         window = _window(ep, i, shown)
         catcount = collections.Counter()
         worst: dict = {}
         scopes: dict = collections.defaultdict(collections.Counter)
-        notes: dict = {}
         ran = 0
         for _ in range(votes):
             try:
@@ -219,67 +297,95 @@ def run(rows: list[dict], n: int, stratified: bool, out_path: Path) -> None:
                     scopes[c][scope] += 1
         if not ran:
             continue
+        stats[show]["judged"] += 1
         conf = {}
         for c, cnt in catcount.items():
             if cnt >= maj:
-                scope = scopes[c].most_common(1)[0][0] if scopes[c] else None
-                conf[c] = {"severity": worst[c], "source_scope": scope}
+                sc = scopes[c].most_common(1)[0][0] if scopes[c] else None
+                conf[c] = {"severity": worst[c], "source_scope": sc}
         if conf:
+            st = stats[show]
+            st["flagged"] += 1
+            for c, d in conf.items():
+                st["cats"][c] += 1
+                st["sevs"][d["severity"]] += 1
+                if c in _SCOPE_CATS and d["source_scope"]:
+                    st["scopes"][d["source_scope"]] += 1
             tgt = ep[i]
             confirmed_rows.append({
-                "episode_id": tgt.get("episode_id"), "frame_id": tgt.get("frame_id"),
+                "show": show, "episode_id": tgt.get("episode_id"), "frame_id": tgt.get("frame_id"),
                 "video_time": tgt.get("video_time"), "line_seq": tgt.get("line_seq"),
-                "target_zh": tgt.get("source_text"), "target_en": window[[w["is_target"] for w in window].index(True)]["en"],
+                "target_zh": tgt.get("source_text"),
+                "target_en": window[[w["is_target"] for w in window].index(True)]["en"],
                 "window": [{"zh": w["src"], "en": w["en"], "target": w["is_target"]} for w in window],
-                "confirmed": conf, "votes": votes,
-                "verified": None,  # <- the human fills this in
+                "confirmed": conf, "votes": votes, "verified": None,  # <- the human fills this in
             })
 
-    judged = len(sample)
-    flagged = len(confirmed_rows)
-    print(f"windows with >=1 majority-confirmed drift error: {flagged}/{judged} "
-          f"({100*flagged//max(1,judged)}%)   [{'GATE — verify first' if not stratified else 'SHAPE — not the gate'}]\n")
+    _report_drift(dict(stats), confirmed_rows, stratified, out_path)
 
-    cat_inc = collections.Counter()
-    sev_inc = collections.Counter()
-    scope_inc = collections.Counter()
-    for r in confirmed_rows:
-        for c, d in r["confirmed"].items():
-            cat_inc[c] += 1
-            sev_inc[d["severity"]] += 1
-            if c in _SCOPE_CATS and d["source_scope"]:
-                scope_inc[d["source_scope"]] += 1
-    if cat_inc:
-        print("confirmed categories (share of judged windows):")
-        for c, cnt in cat_inc.most_common():
-            print(f"    {cnt:4d}  {100*cnt//max(1,judged):3d}%  {c}")
-        print(f"  severity: {dict(sev_inc)}")
-        print(f"  leak/referent source_scope: {dict(scope_inc)}   "
-              f"<- scene-level is the Idea-3 signal; immediate-neighbor => arbiter\n")
 
-    # Dump confirmed instances for the human verification pass.
+def _report_drift(stats: dict, confirmed_rows: list, stratified: bool, out_path: Path) -> None:
+    """Pure reporting (no API) — per show first, then aggregate, with a >2x
+    divergence -> DEFER guard and a below-gate 'not evidence' banner."""
+    judged = sum(s["judged"] for s in stats.values())
+    flagged = sum(s["flagged"] for s in stats.values())
+    tag = "SHAPE — not the gate" if stratified else "GATE — verify first"
+    print(f"windows with >=1 majority-confirmed drift error: {flagged}/{max(1, judged)} "
+          f"({100*flagged//max(1, judged)}%)   [{tag}]\n")
+
+    shows = sorted(stats.keys(), key=lambda k: -stats[k]["judged"])
+    print("per show (a single-show number is NOT evidence — report before aggregate):")
+    rates = []
+    for sh in shows:
+        s = stats[sh]
+        r = s["flagged"] / s["judged"] if s["judged"] else None
+        thin = "" if s["judged"] >= _MIN_SHOW_SAMPLE else f"  (<{_MIN_SHOW_SAMPLE} — too thin to weigh)"
+        rates.append((s["judged"], r))
+        print(f"    {sh[:34]:34s} {s['flagged']}/{s['judged']}  {f'{round(100*r)}%' if r is not None else '—'}{thin}")
+    reliable = [r for j, r in rates if j >= _MIN_SHOW_SAMPLE and r is not None]
+    div = _divergence(reliable)
+    if div:
+        print(f"\n  ** DEFER: per-show drift rates diverge >2x ({div}) — gate on broader corpus, park nothing. **")
+    elif len(reliable) >= 2:
+        print("\n  per-show rates within 2x — consistent so far.")
+    if len(reliable) < _GATE_MIN_SHOWS:
+        print(f"\n  !! BELOW MEASUREMENT GATE ({len(reliable)} show(s) with >={_MIN_SHOW_SAMPLE} judged) — "
+              "WIRING VALIDATION ONLY, not evidence.")
+
+    cat = collections.Counter(); sev = collections.Counter(); scope = collections.Counter()
+    for s in stats.values():
+        cat.update(s["cats"]); sev.update(s["sevs"]); scope.update(s["scopes"])
+    if cat:
+        print("\nconfirmed categories (share of judged windows, aggregate):")
+        for c, cnt in cat.most_common():
+            print(f"    {cnt:4d}  {100*cnt//max(1, judged):3d}%  {c}")
+        print(f"  severity: {dict(sev)}")
+        print(f"  leak/referent source_scope: {dict(scope)}   <- scene-level => Idea-3; immediate-neighbor => arbiter")
+
     if confirmed_rows:
         with out_path.open("w", encoding="utf-8") as f:
             for r in confirmed_rows:
                 f.write(json.dumps(r, ensure_ascii=False) + "\n")
-        print(f"confirmed instances -> {out_path}  (set \"verified\": true/false per line)\n")
+        print(f"\nconfirmed instances -> {out_path}  (set \"verified\": true/false per line)\n")
         for r in confirmed_rows[:12]:
             errs = ", ".join(f"{c}:{d['severity']}" + (f"/{d['source_scope']}" if d['source_scope'] else "")
                              for c, d in r["confirmed"].items())
             vt = r.get("video_time")
             loc = f"t={vt:.1f}s " if isinstance(vt, (int, float)) else ""
-            print(f"  {loc}[{errs}]")
+            print(f"  [{r['show'][:20]}] {loc}[{errs}]")
             for w in r["window"]:
-                mark = ">>" if w["target"] else "  "
-                print(f"    {mark} {w['zh']}  ->  {w['en']}")
+                print(f"    {'>>' if w['target'] else '  '} {w['zh']}  ->  {w['en']}")
             print()
     else:
-        print("no confirmed drift in the sample.")
+        print("\nno confirmed drift in the sample.")
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("path", nargs="?", help="log file (default: most recent run)")
+    ap.add_argument("path", nargs="*", help="log file(s) (default: most recent run)")
+    ap.add_argument("--all", action="store_true", help="every run in the log dir (the multi-episode corpus)")
+    ap.add_argument("--holdout", metavar="SUBSTR",
+                    help="exclude lines whose label contains SUBSTR (reserve a validation episode)")
     ap.add_argument("--sample", type=int, default=60, help="target windows to judge (default 60)")
     ap.add_argument("--stratified", action="store_true", help="oversample risky windows (SHAPE, not the gate)")
     ap.add_argument("--votes", type=int, help="votes per window (else GROQ_DRIFT_VOTES or 3)")
@@ -287,14 +393,14 @@ def main() -> int:
     if args.votes:
         os.environ["GROQ_DRIFT_VOTES"] = str(args.votes)
 
-    path = Path(args.path) if args.path else _latest_log()
-    if not path or not path.exists():
-        print(f"no log found in {LOG_DIR}.", file=sys.stderr)
+    rows, files = _corpus(args.path, args.all, args.holdout)
+    if not rows:
+        print(f"no log rows found in {LOG_DIR}.", file=sys.stderr)
         return 1
-    print(f"log: {path.name}")
-    rows = load(path)
+    _corpus_banner(rows, files, args.holdout)
     suffix = "stratified" if args.stratified else "random"
-    out_path = path.with_suffix(f".drift-{suffix}.verify.jsonl")
+    base = files[0] if files else (LOG_DIR / "corpus")
+    out_path = base.with_suffix(f".drift-{suffix}.verify.jsonl")
     run(rows, args.sample, args.stratified, out_path)
     return 0
 

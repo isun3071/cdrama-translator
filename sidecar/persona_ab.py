@@ -20,7 +20,13 @@ Design honesty:
 - Judged with GEMBA-MQM (reuse audit._mqm_vote), aggregated over votes, paired.
 
     python persona_ab.py --dry-run                 # sample + assemble arms, NO api calls
-    python persona_ab.py [log] --guardrail 400 --targeted 80 --votes 3   # the real run
+    python persona_ab.py [log ...] [--all] [--holdout SUBSTR] --guardrail 400 --targeted 80 --votes 3
+
+CORPUS GATE: an A/B on ONE episode fits that episode. The report breaks results out
+PER SHOW and flags an arm whose EFFECT flips sign across shows as DEFER (raw clean-
+rate divergence between shows is expected and is not the trigger); below 3 shows it
+banners the run as WIRING VALIDATION ONLY. Feed the broader corpus with multiple logs
+or --all, and reserve a validation episode with --holdout.
 
 The FRAMING and CLAUSES drafts below are placeholders — finalize them before a real
 run. --dry-run prints all four assembled prompts so control-vs-arm differences are
@@ -48,6 +54,7 @@ from audit import load, split_stages, _latest_log, _mqm_vote, _MQM_WEIGHT
 from audit_log import LOG_DIR
 from glossary import GLOSSARY
 from translate import _system_prompt, _LANG
+from drift_judge import _show_key, _corpus, _corpus_banner, _MIN_SHOW_SAMPLE, _GATE_MIN_SHOWS  # corpus scoping
 
 # --- the arms: framing (Factor A) x clauses (Factor B) ---------------------- #
 # DRAFT — finalize wording before running. Kept minimal; the rule block is shared.
@@ -185,7 +192,8 @@ def run(rows: list[dict], n_guard: int, n_targeted: int, votes: int, target_lang
         ctx_list = it.get("context_lines") or []
         ctx = "\n".join(ctx_list)
         gloss = GLOSSARY.matching(src, ctx_list, it.get("label", ""))
-        row = {"stratum": it["_stratum"], "match_rule": it.get("_match_rule"),
+        row = {"stratum": it["_stratum"], "show": _show_key(it.get("label", "")),
+               "match_rule": it.get("_match_rule"),
                "frame_id": it.get("frame_id"), "source_text": src, "arms": {}}
         for arm, t in translators.items():
             en = t.translate(src, "ch", target_lang, ctx_list, it.get("continuation", False), gloss)
@@ -200,45 +208,98 @@ def run(rows: list[dict], n_guard: int, n_targeted: int, votes: int, target_lang
     print(f"\nper-line outputs -> {out_path}")
 
 
+def _arm_summary(sub: list[dict]) -> dict:
+    out = {}
+    for arm in ARMS:
+        scored = [r["arms"][arm] for r in sub if r["arms"].get(arm, {}).get("penalty") is not None]
+        if scored:
+            clean = sum(1 for a in scored if not a["confirmed"])
+            out[arm] = (clean, len(scored), statistics.mean(a["penalty"] for a in scored))
+    return out
+
+
+def _mcnemar(sub: list[dict], arm: str) -> tuple[int, int]:
+    b = c = 0
+    for r in sub:
+        ac, cc = r["arms"].get(arm), r["arms"].get("control")
+        if not ac or not cc or ac["penalty"] is None or cc["penalty"] is None:
+            continue
+        a_clean, c_clean = not ac["confirmed"], not cc["confirmed"]
+        if a_clean and not c_clean:
+            b += 1
+        elif c_clean and not a_clean:
+            c += 1
+    return b, c
+
+
 def _report(results: list[dict]) -> None:
     for stratum in ("guardrail", "targeted"):
         sub = [r for r in results if r["stratum"] == stratum]
         if not sub:
             continue
-        print(f"=== {stratum} (n={len(sub)}) ===")
-        for arm in ARMS:
-            scored = [r["arms"][arm] for r in sub if r["arms"][arm]["penalty"] is not None]
-            if not scored:
-                continue
-            clean = sum(1 for a in scored if not a["confirmed"])
-            mean_pen = statistics.mean(a["penalty"] for a in scored)
-            print(f"  {arm:16s} clean {clean}/{len(scored)} ({100*clean//len(scored)}%)   mean penalty {mean_pen:.2f}")
-        # McNemar discordant vs control
-        print("  paired vs control (discordant pairs — arm better : control better):")
-        for arm in ARMS[1:]:
-            b = c = 0
-            for r in sub:
-                ac, cc = r["arms"][arm], r["arms"]["control"]
-                if ac["penalty"] is None or cc["penalty"] is None:
+        shows = sorted({r["show"] for r in sub}, key=lambda s: -sum(1 for r in sub if r["show"] == s))
+        print(f"=== {stratum} (n={len(sub)}, {len(shows)} show(s)) ===")
+
+        # Per show: arm clean% and the arm's DELTA vs control. The A/B generalization
+        # test is whether an arm's EFFECT keeps its sign across shows — raw clean-rate
+        # divergence between shows is expected (shows differ in difficulty) and is NOT
+        # the defer trigger; a sign flip in the effect is.
+        print("  per show — arm clean% (delta vs control):")
+        arm_signs = {a: set() for a in ARMS[1:]}
+        reliable_shows = 0
+        for sh in shows:
+            ss = [r for r in sub if r["show"] == sh]
+            summ = _arm_summary(ss)
+            crate = (summ["control"][0] / summ["control"][1]) if "control" in summ else None
+            reliable = len(ss) >= _MIN_SHOW_SAMPLE
+            reliable_shows += 1 if reliable else 0
+            parts = []
+            for a in ARMS:
+                if a not in summ:
                     continue
-                a_clean, c_clean = not ac["confirmed"], not cc["confirmed"]
-                if a_clean and not c_clean:
-                    b += 1
-                elif c_clean and not a_clean:
-                    c += 1
-            flag = "" if (b + c) >= 30 else "  (underpowered: <30 discordant)"
-            print(f"    {arm:16s} {b} : {c}{flag}")
+                cl, n, _pen = summ[a]
+                rate = cl / n
+                if a == "control" or crate is None:
+                    parts.append(f"{a}={round(100*rate)}%")
+                else:
+                    d = rate - crate
+                    parts.append(f"{a}={round(100*rate)}%({'+' if d >= 0 else ''}{round(100*d)})")
+                    if reliable:  # a thin show can't cast a sign vote
+                        arm_signs[a].add(1 if d > 0 else (-1 if d < 0 else 0))
+            thin = "" if reliable else f"  (<{_MIN_SHOW_SAMPLE}, not weighed)"
+            print(f"    {sh[:24]:24s} " + "  ".join(parts) + thin)
+
+        summ = _arm_summary(sub)
+        print("  aggregate:")
+        for a in ARMS:
+            if a in summ:
+                cl, n, pen = summ[a]
+                print(f"    {a:16s} clean {cl}/{n} ({100*cl//n}%)   penalty {pen:.2f}")
+
+        print("  paired vs control (arm better : control better; ~30 discordant for power):")
+        for a in ARMS[1:]:
+            b, c = _mcnemar(sub, a)
+            flag = "" if (b + c) >= 30 else "  (underpowered <30)"
+            gen = "  ** effect flips sign across shows -> DEFER **" if len(arm_signs[a] - {0}) > 1 else ""
+            print(f"    {a:16s} {b} : {c}{flag}{gen}")
+
         if stratum == "targeted":
             print("  addition-category incidence (name/convention-leak proxy):")
-            for arm in ARMS:
-                add = sum(1 for r in sub if "accuracy/addition" in r["arms"][arm].get("confirmed", {}))
-                print(f"    {arm:16s} {add}/{len(sub)}")
+            for a in ARMS:
+                add = sum(1 for r in sub if "accuracy/addition" in r["arms"].get(a, {}).get("confirmed", {}))
+                print(f"    {a:16s} {add}/{len(sub)}")
+
+        if reliable_shows < _GATE_MIN_SHOWS:
+            print(f"  !! {reliable_shows} show(s) with >={_MIN_SHOW_SAMPLE} lines — WIRING VALIDATION ONLY, not evidence.")
         print()
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("path", nargs="?", help="log file (default: most recent run)")
+    ap.add_argument("path", nargs="*", help="log file(s) (default: most recent run)")
+    ap.add_argument("--all", action="store_true", help="every run in the log dir (multi-episode corpus)")
+    ap.add_argument("--holdout", metavar="SUBSTR",
+                    help="exclude lines whose label contains SUBSTR (reserve a validation episode)")
     ap.add_argument("--guardrail", type=int, default=400, help="random regression-guardrail lines")
     ap.add_argument("--targeted", type=int, default=80, help="blind convention-bearing lines")
     ap.add_argument("--votes", type=int, default=3, help="GEMBA-MQM votes per output")
@@ -246,21 +307,21 @@ def main() -> int:
     ap.add_argument("--dry-run", action="store_true", help="sample + assemble arms, NO api calls")
     args = ap.parse_args()
 
-    path = Path(args.path) if args.path else _latest_log()
-    if not path or not path.exists():
-        print(f"no log found in {LOG_DIR}.", file=sys.stderr)
+    rows, files = _corpus(args.path, args.all, args.holdout)
+    if not rows:
+        print(f"no log rows found in {LOG_DIR}.", file=sys.stderr)
         return 1
-    rows = load(path)
     lang = _LANG.get(args.lang, args.lang)
+    _corpus_banner(rows, files, args.holdout)
 
     if args.dry_run:
-        print(f"log: {path.name}   (DRY RUN — no API calls)\n")
+        print("(DRY RUN — no API calls)\n")
         guard = _sample(rows, args.guardrail, targeted=False)
         targ = _sample(rows, args.targeted, targeted=True)
         print(f"guardrail sample: {len(guard)} random ok lines")
         print(f"targeted sample:  {len(targ)} convention-bearing lines (blind, by source rule)")
-        by_rule = collections.Counter(r["_match_rule"] for r in targ)
-        print(f"  by matched rule: {dict(by_rule)}")
+        print(f"  by matched rule: {dict(collections.Counter(r['_match_rule'] for r in targ))}")
+        print(f"  by show: {dict(collections.Counter(_show_key(r.get('label','')) for r in targ))}")
         for r in targ[:8]:
             print(f"    [{r['_match_rule']:9s}] {r['source_text']}")
         print("\n--- assembled arm prompts (finalize DRAFTs before a real run) ---")
@@ -270,7 +331,8 @@ def main() -> int:
         print("\n(DRY RUN complete — no lines translated, no judge calls made.)")
         return 0
 
-    out_path = path.with_suffix(".persona-ab.jsonl")
+    base = files[0] if files else (LOG_DIR / "corpus")
+    out_path = base.with_suffix(".persona-ab.jsonl")
     run(rows, args.guardrail, args.targeted, args.votes, args.lang, out_path)
     return 0
 

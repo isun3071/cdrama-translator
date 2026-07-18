@@ -189,6 +189,27 @@ below 30). **The `_FRAME_SUB` and `_CLAUSES` drafts are placeholders — finaliz
 before a real run;** `--dry-run` prints all four assembled prompts to inspect the
 control-vs-arm diffs.
 
+### Corpus gate (both measurement tools)
+
+A number from one episode of one show fits *that episode*, not the phenomenon —
+drift and prompt effects can be genre-specific. So both `drift_judge.py` and
+`persona_ab.py` enforce a corpus gate in code:
+
+- **Multi-log input** — pass several logs or `--all` to measure across a corpus;
+  `--holdout SUBSTR` reserves a validation episode (never used for the pass) so you
+  can check whether a tuning tweak generalizes.
+- **Per-show before aggregate** — results break out per show (grouped by a `《…》`/
+  title heuristic); the aggregate never stands alone.
+- **Divergence → DEFER** — the drift judge defers if per-show *rates* spread >2×; the
+  A/B defers if an arm's *effect* flips sign across shows (raw per-show clean-rate
+  spread is expected and is not the trigger). A show needs ≥8 judged items to weigh in.
+- **Below-gate banner** — under 3 substantial shows (≥30 lines each; stray-tab lines
+  are flagged incidental), every run is labelled **WIRING VALIDATION ONLY, not
+  evidence**. The current single-episode log trips this by design.
+
+Minimum before any run counts as evidence: **≥3 shows across ≥2 genres, ≥5 episodes,
+and ≥1 held-out episode.**
+
 ## Consistency glossary
 
 Each line is translated independently, so a recurring term (黄羊, a character
