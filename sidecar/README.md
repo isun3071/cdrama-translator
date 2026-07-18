@@ -36,8 +36,13 @@ correct reads (走吧 @ 0.54).
 **Translation is real now.** `GroqTranslator` (translate.py) calls Groq's
 chat-completions API. `make_translator()` picks Groq when `GROQ_API_KEY` is set
 (loaded from the repo-root `.env`), else the mock; `CDT_TRANSLATOR=mock` forces
-the mock for offline work. Model is `GROQ_MODEL` (default
-`llama-3.3-70b-versatile`). Measured ~140-285ms round-trips, well under budget.
+the mock for offline work. Model is `GROQ_MODEL` (default `qwen/qwen3.6-27b` —
+Qwen is trained heavily on Chinese and edges out llama on nuance/idiom). Qwen is
+a *thinking* model, so the client auto-sends `reasoning_effort: "none"` to
+suppress `<think>` traces (overridable via `GROQ_REASONING_EFFORT`) and strips
+any stray trace defensively. Caveat: `qwen/qwen3.6-27b` is a Groq **preview**
+model — fine for personal use, but Groq may change/pull it; fall back with
+`GROQ_MODEL=llama-3.3-70b-versatile`. ~120-430ms round-trips.
 The system prompt treats OCR as a noisy channel — tolerate character glitches,
 don't invent — and preserves dramatic nuance (idiom/tone, no flattening).
 
@@ -67,15 +72,17 @@ with information rather than guessing — see the caveat in the top-level README
 
 ```
 GROQ_API_KEY=gsk_...            # required for real translation; gitignored
-GROQ_MODEL=llama-3.3-70b-versatile   # optional override
+GROQ_MODEL=qwen/qwen3.6-27b          # optional override (default; qwen is best on CN)
+GROQ_REASONING_EFFORT=none           # optional; auto-set for qwen/qwq already
 CDT_TRANSLATOR=mock             # optional: force the mock translator even with a key
 CDT_OCR=mock                    # optional: force the mock OCR (offline / contract tests)
 ```
 
 ## Auditing translations
 
-Each sidecar run writes its own `logs/cdrama-<YYYYMMDD-HHMMSS>.jsonl` (gitignored),
-one JSON line per request — so sessions never mix. Every line captures the
+Each sidecar run writes its own `logs/cdrama-<YYYYMMDD-HHMMSS>-<model>.jsonl`
+(gitignored), one JSON line per request — so sessions (and models) never mix,
+which makes A/B'ing llama vs qwen on the same footage a matter of two runs. Every line captures the
 **whole pipeline** so a bad output can be traced to the stage it went wrong — not
 just the final translation:
 

@@ -100,6 +100,13 @@ class GroqTranslator:
             "Content-Type": "application/json",
         })
         self._sys: dict[str, str] = {}
+        # Qwen/QwQ on Groq default to emitting <think> reasoning traces, which
+        # wreck a real-time translator (extra latency + the answer gets truncated
+        # past max_tokens). Switch thinking off. Override with GROQ_REASONING_EFFORT.
+        effort = os.getenv("GROQ_REASONING_EFFORT", "").strip()
+        if not effort and any(k in model.lower() for k in ("qwen", "qwq")):
+            effort = "none"
+        self.reasoning_effort = effort
 
     def translate(
         self,
@@ -143,24 +150,28 @@ class GroqTranslator:
             )
         else:
             user = f"Translate this line:\n{text}"
+        body = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "temperature": 0.3,
+            "max_tokens": 100,
+            "stream": False,
+        }
+        if self.reasoning_effort:
+            body["reasoning_effort"] = self.reasoning_effort
         try:
-            r = self._session.post(
-                _GROQ_ENDPOINT,
-                json={
-                    "model": self.model,
-                    "messages": [
-                        {"role": "system", "content": system},
-                        {"role": "user", "content": user},
-                    ],
-                    "temperature": 0.3,
-                    "max_tokens": 100,
-                    "stream": False,
-                },
-                timeout=self.timeout,
-            )
+            r = self._session.post(_GROQ_ENDPOINT, json=body, timeout=self.timeout)
             r.raise_for_status()
-            out = r.json()["choices"][0]["message"]["content"].strip()
-            return out.strip('"').strip()
+            out = r.json()["choices"][0]["message"]["content"]
+            # Defensive: drop any reasoning trace a thinking model still emits.
+            if "</think>" in out:
+                out = out.split("</think>")[-1]
+            elif out.lstrip().startswith("<think>"):
+                return ""  # thinking-only (e.g. truncated) — no usable answer
+            return out.strip().strip('"').strip()
         except Exception as e:  # network, rate limit, bad key/model, parse
             log.warning("groq translate failed (%s): %s", type(e).__name__, e)
             return ""
@@ -174,7 +185,7 @@ def make_translator() -> Translator:
         return MockTranslator()
     key = os.getenv("GROQ_API_KEY", "").strip()
     if key and not key.startswith("gsk_your"):
-        model = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile").strip()
+        model = os.getenv("GROQ_MODEL", "qwen/qwen3.6-27b").strip()
         log.info("translator: GroqTranslator (model=%s)", model)
         return GroqTranslator(key, model)
     log.info("translator: MockTranslator (no GROQ_API_KEY)")

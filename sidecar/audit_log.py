@@ -29,30 +29,40 @@ LOG_DIR = Path(os.getenv("CDT_LOG_DIR", str(Path(__file__).resolve().parent.pare
 ENABLED = os.getenv("CDT_LOG", "1").strip().lower() not in ("0", "false", "no", "off")
 
 
-def _new_run_path() -> Path:
-    # One fresh file per run, named by local start time (this module imports once
-    # per sidecar process, so the name is fixed for the life of the run).
-    return LOG_DIR / f"cdrama-{datetime.now().strftime('%Y%m%d-%H%M%S')}.jsonl"
+# Fixed at import = one file per run. The model tag is filled in by set_run_tag()
+# at startup (before any line is logged), so runs self-separate by model.
+_STAMP = datetime.now().strftime("%Y%m%d-%H%M%S")
+_run_tag = ""
+_log_path: Path | None = None
 
 
-# CDT_LOG_PATH pins a single explicit file (used by tests); otherwise each run
-# gets its own timestamped file.
-_explicit = os.getenv("CDT_LOG_PATH", "").strip()
-LOG_PATH = Path(_explicit) if _explicit else _new_run_path()
+def set_run_tag(tag: str) -> None:
+    """Tag this run's file with e.g. the model slug, so llama and qwen runs land
+    in differently-named files (cdrama-<stamp>-<tag>.jsonl)."""
+    global _run_tag, _log_path
+    base = (tag or "").split("/")[-1]
+    _run_tag = "".join(c if (c.isalnum() or c in "._-") else "-" for c in base)[:40]
+    _log_path = None  # re-resolve on next append
 
-_dir_ready = False
 
+def _resolve_path() -> Path:
+    # CDT_LOG_PATH pins a single explicit file (used by tests); else per-run.
+    explicit = os.getenv("CDT_LOG_PATH", "").strip()
+    if explicit:
+        return Path(explicit)
+    suffix = f"-{_run_tag}" if _run_tag else ""
+    return LOG_DIR / f"cdrama-{_STAMP}{suffix}.jsonl"
 
 def append(entry: dict) -> None:
     """Append one entry as a JSON line. No-op if disabled; never raises."""
     if not ENABLED:
         return
-    global _dir_ready
+    global _log_path
     try:
-        if not _dir_ready:
-            LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-            _dir_ready = True
-        with LOG_PATH.open("a", encoding="utf-8") as f:
+        if _log_path is None:
+            _log_path = _resolve_path()
+            _log_path.parent.mkdir(parents=True, exist_ok=True)
+        with _log_path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
     except Exception:
         log.debug("translation log append failed", exc_info=True)

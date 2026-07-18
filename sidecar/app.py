@@ -54,6 +54,8 @@ app.add_middleware(
 # provider-swap; nothing below mentions an implementation.
 ocr: OcrEngine = make_ocr()               # RapidOCR if available, else mock
 translator: Translator = make_translator()  # Groq if GROQ_API_KEY set, else mock
+# Tag this run's audit log by model, so llama/qwen runs land in separate files.
+audit_log.set_run_tag(getattr(translator, "model", None) or "mock")
 
 
 def _decode(frame_b64: str) -> bytes:
