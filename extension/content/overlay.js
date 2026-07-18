@@ -37,6 +37,7 @@ if (!window.CDT.Overlay) {
       background: rgba(8,8,10,.42); padding: .1em .5em; border-radius: 4px;
       box-decoration-break: clone; -webkit-box-decoration-break: clone;
     }
+    .band .tr .box .tail { transition: opacity .18s ease-in; }
   `;
 
   class Overlay {
@@ -61,7 +62,13 @@ if (!window.CDT.Overlay) {
       this.trWrap.className = "tr";
       this.trBox = document.createElement("span");
       this.trBox.className = "box";
+      this.trPrefix = document.createElement("span"); // already-read, kept in place
+      this.trTail = document.createElement("span");   // new continuation, fades in
+      this.trTail.className = "tail";
+      this.trBox.appendChild(this.trPrefix);
+      this.trBox.appendChild(this.trTail);
       this.trWrap.appendChild(this.trBox);
+      this._lastTr = "";
       this.band.appendChild(this.srcEl);
       this.band.appendChild(this.trWrap);
       this.root.appendChild(this.band);
@@ -81,15 +88,46 @@ if (!window.CDT.Overlay) {
     }
 
     show({ source, translation }) {
+      const tr = translation || "";
       this.state = { source, translation };
       this.srcEl.textContent = source || "";
-      this.trBox.textContent = translation || "";
-      this.band.style.display = translation ? "block" : "none";
+      // Tail-masking (6a): when a continuation revision extends what's already on
+      // screen, keep the shared prefix in place and fade in only the new tail, so
+      // the viewer doesn't re-read text they've already read. If the revision
+      // rephrases the prefix (no shared prefix), fall back to a full render.
+      const common = this._commonPrefix(this._lastTr, tr);
+      if (this._lastTr && common && common.length < tr.length) {
+        if (this.trPrefix.textContent !== common) this.trPrefix.textContent = common;
+        this.trTail.textContent = tr.slice(common.length);
+        this.trTail.style.opacity = "0";
+        void this.trTail.offsetWidth; // reflow so the fade actually runs
+        this.trTail.style.opacity = "1";
+      } else {
+        this.trPrefix.textContent = tr;
+        this.trTail.textContent = "";
+        this.trTail.style.opacity = "1";
+      }
+      this._lastTr = tr;
+      this.band.style.display = tr ? "block" : "none";
       this._place();
+    }
+
+    /* Longest shared prefix of two translations, never splitting a word — so a
+     * revision that extends the line reveals only the appended tail. */
+    _commonPrefix(a, b) {
+      if (!a || !b) return "";
+      let i = 0;
+      const n = Math.min(a.length, b.length);
+      while (i < n && a[i] === b[i]) i++;
+      if (i < a.length && i < b.length && a[i] !== " " && b[i] !== " ") {
+        while (i > 0 && b[i - 1] !== " ") i--; // divergence mid-word -> back to a space
+      }
+      return b.slice(0, i);
     }
 
     clear() {
       this.state = null;
+      this._lastTr = "";
       this.band.style.display = "none";
     }
 
