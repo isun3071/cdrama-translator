@@ -1,0 +1,16 @@
+{
+  "_comment": "Curated, shareable seed of GENRE-NEUTRAL terms only (never character names — those are per-show and collide). Human/LLM editable: fix a rendering here and it applies to every show. Shape: {places:{zh:en}, terms:{zh:en}}.",
+  "places": {
+    "戈壁": "Gobi",
+    "北京": "Beijing",
+    "黄河": "Yellow River",
+    "华北": "North China",
+    "中国": "China"
+  },
+  "terms": {
+    "黄羊": "Mongolian gazelle",
+    "原子弹": "atomic bomb",
+    "原子能": "atomic energy",
+    "同志": "comrade"
+  }
+}

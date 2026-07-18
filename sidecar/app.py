@@ -29,6 +29,7 @@ load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 import audit_log
 from config import CONSENSUS_FLOOR, OCR_CONF_GATE
+from glossary import GLOSSARY
 from contract import DisplayEvent, TranslateRequest, TranslateResponse
 from dedup import is_duplicate
 from ocr import OcrEngine, make_ocr
@@ -78,7 +79,7 @@ def health() -> dict:
 _PROVIDER = {"GroqTranslator": "groq", "MockTranslator": "mock", "OllamaTranslator": "ollama"}
 
 
-def _audit_entry(req: TranslateRequest, resp: TranslateResponse, raw_reads: list, latency_ms: int) -> dict:
+def _audit_entry(req: TranslateRequest, resp: TranslateResponse, raw_reads: list, glossary: dict, latency_ms: int) -> dict:
     # Per-stage record, so a bad output can be traced to the stage it went wrong:
     # raw per-frame OCR reads -> voted source_text -> context/continuation -> translation.
     return {
@@ -94,6 +95,7 @@ def _audit_entry(req: TranslateRequest, resp: TranslateResponse, raw_reads: list
         "confidence": resp.confidence,      # mean of the contributing reads
         "context_lines": req.context_lines,
         "continuation": req.continuation,   # candidate-to-bridge flag (↳cont)
+        "glossary": glossary,               # terms pinned for this line, if any (6b)
         "translation": resp.translation,
         "duplicate": resp.duplicate,
         "latency_ms": latency_ms,
@@ -124,6 +126,7 @@ def translate(req: TranslateRequest) -> TranslateResponse:
     t0 = time.perf_counter()
     resp = TranslateResponse(frame_id=req.frame_id)
     raw_reads: list = []
+    gloss: dict = {}
     try:
         reads = ocr.read_frames([_decode(f) for f in req.frames])
         raw_reads = [{"text": r.text, "conf": round(r.confidence, 3)} for r in reads]
@@ -150,8 +153,9 @@ def translate(req: TranslateRequest) -> TranslateResponse:
             resp.duplicate = True
             return resp
 
+        gloss = GLOSSARY.matching(voted, req.context_lines, req.label)
         resp.translation = translator.translate(
-            voted, req.source_lang, req.target_lang, req.context_lines, req.continuation
+            voted, req.source_lang, req.target_lang, req.context_lines, req.continuation, gloss
         )
         resp.status = "ok"
         return resp
@@ -163,5 +167,5 @@ def translate(req: TranslateRequest) -> TranslateResponse:
     finally:
         # Every path (incl. the early returns above) is audited — the finally
         # runs before the function actually returns.
-        audit_log.append(_audit_entry(req, resp, raw_reads, round((time.perf_counter() - t0) * 1000)))
+        audit_log.append(_audit_entry(req, resp, raw_reads, gloss, round((time.perf_counter() - t0) * 1000)))
     return resp

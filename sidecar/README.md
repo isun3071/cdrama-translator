@@ -111,6 +111,32 @@ The judge defaults to the same Groq model that produced the translations — a
 self-eval first pass, good for surfacing suspects but biased high; set
 `GROQ_JUDGE_MODEL` to a different/stronger model for a real audit.
 
+## Consistency glossary
+
+Each line is translated independently, so a recurring term (黄羊, a character
+name) scatters across renderings. The glossary pins each recurring term to one
+translation and injects only the terms present in the current line (0-2, so the
+prompt never bloats). Two layers, both plain JSON, human- and LLM-editable:
+
+- `glossary/universal.json` — curated, shareable, **genre-neutral terms only**
+  (黄羊 → Mongolian gazelle, 原子弹 → atomic bomb). Never character names — those
+  collide across shows. Fixes universal-term *correctness* from the first line.
+- `glossary/shows/<slug>.json` — per-show, **auto-built** from a run's log by an
+  LLM extraction pass; names/places/show-specific terms (gitignored, personal).
+
+Curated universal wins conflicts (so a hand-corrected term beats noisy
+auto-extraction). Build a per-show glossary from a run:
+
+```
+python glossary.py build logs/cdrama-<...>.jsonl
+```
+
+~34 distinct terms per episode; converges fast. Consistency, not correctness —
+auto-built entries pin whatever the model first read, so edit the JSON (or the
+seed) to fix a rendering. Empty/delete the files to disable; `CDT_GLOSSARY_DIR`
+relocates them. Which terms were pinned per line is in the audit log's
+`glossary` field.
+
 ```
 sidecar/
   app.py            FastAPI app + POST /translate orchestration (the pipeline)

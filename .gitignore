@@ -219,3 +219,6 @@ __marimo__/
 # translation audit logs (personal-use data)
 logs/
 *.jsonl
+
+# per-show glossaries are personal; the universal seed is committed
+glossary/shows/

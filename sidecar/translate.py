@@ -27,6 +27,7 @@ class Translator(Protocol):
         target_lang: str,
         context_lines: list[str],
         continuation: bool,
+        glossary: dict[str, str] | None = None,
     ) -> str:
         """Translate `text`. context_lines are the recent SOURCE lines, passed as
         reference for context-aware decoding (6a/6b). When continuation is true,
@@ -47,12 +48,14 @@ class MockTranslator:
         target_lang: str,
         context_lines: list[str] | None = None,
         continuation: bool = False,
+        glossary: dict[str, str] | None = None,
     ) -> str:
         if not text:
             return ""
         ctx = f"·ctx{len(context_lines)}" if context_lines else ""
         cont = "·cont" if continuation else ""
-        return f"[{target_lang}·mock{ctx}{cont}] {text}"
+        gl = f"·gl{len(glossary)}" if glossary else ""
+        return f"[{target_lang}·mock{ctx}{cont}{gl}] {text}"
 
 
 # --- Groq provider --------------------------------------------------------- #
@@ -129,6 +132,7 @@ class GroqTranslator:
         target_lang: str,
         context_lines: list[str] | None = None,
         continuation: bool = False,
+        glossary: dict[str, str] | None = None,
     ) -> str:
         if not text:
             return ""
@@ -165,6 +169,11 @@ class GroqTranslator:
             )
         else:
             user = f"Translate this line:\n{text}"
+        if glossary:
+            # Pin recurring terms to one rendering (glossary, 6b). Only the terms
+            # present in this line are passed in, so this stays 0-2 items.
+            pins = "; ".join(f"{zh} = {en}" for zh, en in glossary.items())
+            user = f"Use these fixed translations verbatim wherever the term appears: {pins}.\n" + user
         body = {
             "model": self.model,
             "messages": [
