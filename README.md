@@ -3,22 +3,40 @@
 Live subtitle translator for videos with hardcoded (burned-in) subtitles. See
 `CLAUDE.md` for the operating manual and `DOCUMENTATION.md` for the full design.
 
-## Status: session 3 — end to end on mock OCR/translation
+## Status: real end to end — RapidOCR + Groq
 
-The full loop runs: the extension captures 3 spaced frames on each subtitle,
-POSTs them to the local sidecar, and overlays the returned translation on the
-player. OCR and translation are still **mocked** (so every line comes back as
-canned Chinese + a `[lang·mock]` tag), but capture → change detection → 3-frame
-POST → vote/dedup/gate → overlay, plus **drop-don't-queue** and overlay-clear on
-silence, are all live.
+The whole pipeline is real: the extension captures 3 spaced frames on each
+subtitle, POSTs them to the local sidecar, which **OCRs (RapidOCR)**, votes,
+dedups, and **translates (Groq)** with context-aware decoding, and the extension
+overlays the result. Capture → change detection → 3-frame POST → real OCR →
+vote/dedup/gate → real translate → overlay, plus **drop-don't-queue**,
+source-hanzi display hold, and overlay-clear on silence, all live. ~390-500ms
+full round-trips, at the 500ms budget.
 
 - `extension/` — capture, text-mask change detection, the debug panel, the
   service call (via the background script), and the translation overlay.
-- `sidecar/` — local FastAPI `POST /translate`: real majority vote / dedup /
-  gating, **mock** OCR + translation behind swappable seams.
+- `sidecar/` — local FastAPI `POST /translate`: real RapidOCR + per-character
+  vote / dedup / gating + real **Groq** translation (context-aware), all behind
+  swappable seams. Needs `GROQ_API_KEY` in the repo-root `.env` for translation
+  (else a mock translator, so it still runs); OCR falls back to a mock only if
+  RapidOCR isn't installed.
 
-Still mocked: real OCR (PaddleOCR) and real translation (Groq). Those are the
-next two steps.
+Mask-before-OCR (§4) is in: the sidecar background-subtracts the crop before
+recognition (2/6 → 6/6 exact on adversarial clutter, ~40ms/frame). Split-sentence
+**re-translation** (6a) is in too — a line that completes the previous one is
+translated as one combined sentence, and the overlay revises in place. The
+translation prompt also treats OCR as a noisy channel (tolerate glitches, keep
+nuance).
+
+Honest caveat on OCR-tolerance: it reliably drops *clearly spurious* noise (a
+stray trailing 三) but can still hallucinate on a *plausible* look-alike swap —
+e.g. 明天→明大 got read as a place name, not corrected to "tomorrow." The real
+fix is OCR-uncertainty passing (tell the model which characters the 3 frames
+disagreed on); until then the mask + vote are the primary defense and this is the
+documented accuracy ceiling.
+
+Remaining: tail-masking + OCR-uncertainty passing (6a refinements), then Shape A —
+replacing the sidecar with in-browser wasm OCR, same contract.
 
 ```
 extension/

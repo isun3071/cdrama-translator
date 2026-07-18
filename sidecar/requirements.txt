@@ -1,9 +1,14 @@
-# Session 2 (contract skeleton) — light, fast install.
+# Contract skeleton + endpoint — light, fast install.
 fastapi
 uvicorn          # plain, not uvicorn[standard]: uvloop/httptools lag new Pythons
 pydantic>=2
 
-# Session 2 next step (OCR) — heavy; added when we wire real reads. See README
-# for the Python-version caveat (paddle wheels lag Python 3.14).
-# paddleocr
-# paddlepaddle
+# Real translation provider (Groq). Mock path needs neither.
+requests         # Groq HTTP call
+python-dotenv    # load GROQ_API_KEY from the repo-root .env
+
+# Real OCR — RapidOCR (ONNX Runtime + PP-OCR models). Chosen over paddleocr:
+# lighter, no paddlepaddle, clean cp314 wheels, and the ONNX/PP-OCR pipeline the
+# wasm Shape A will mirror. Pulls onnxruntime + opencv + pillow (~150MB).
+# The mock OCR path needs none of this.
+rapidocr-onnxruntime

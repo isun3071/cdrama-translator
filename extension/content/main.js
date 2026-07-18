@@ -38,6 +38,12 @@ if (!window.CDT.__mainLoaded) {
       this.lastShippedText = "";  // source (hanzi) last displayed -> dedup
       this.lastTranslation = "";  // cached translation for the current line
       this.sourceHistory = [];    // rolling recent SOURCE lines -> context_lines (6b)
+      this.sentenceLines = [];    // SOURCE lines of the in-progress sentence (6a)
+      this.sentenceHanzi = 0;     // total hanzi in the in-progress sentence
+      this.lastLineEndAt = 0;     // when the previous line ended (continuation gap)
+      this.overlayHanzi = 0;      // source hanzi behind the current overlay (hold)
+      this.overlayFrameId = null; // frame_id of the line the overlay is showing (audit)
+      this.overlayVideoTime = 0;  // video position when the overlay appeared (audit)
       this.lastLineDurMs = 0;     // how long the last line was actually on screen
       this.overlayShownAt = 0;    // when the current overlay content appeared
       this.overlayClearTimer = null;
@@ -133,12 +139,16 @@ if (!window.CDT.__mainLoaded) {
     _resetLine() {
       clearTimeout(this.overlayClearTimer);
       this.overlayClearTimer = null;
+      this._finalizeOverlay("cleared");
       this.detector.reset();
       this.overlay.clear();
       this.lineToken++;
       this.lastShippedText = "";
       this.lastTranslation = "";
       this.sourceHistory = [];  // box/video/lang change is a genuine context break
+      this.sentenceLines = [];
+      this.sentenceHanzi = 0;
+      this.lastLineEndAt = 0;
     }
 
     _videoLabel() {
@@ -313,17 +323,25 @@ if (!window.CDT.__mainLoaded) {
     _onEvent(type, info) {
       if (type === "line-start") {
         const token = ++this.lineToken;
-        // A new line is on screen now: the previous translation no longer
-        // belongs to it, so take it down immediately rather than letting its
-        // reading-hold linger past this line's arrival (6b: real-time alignment
-        // beats reading comfort when they conflict).
+        const cont = this._detectContinuation(performance.now());
+        // Always cancel a pending reading-hold clear. On a NON-continuation line,
+        // also take the previous translation down immediately (6b) and start a
+        // fresh sentence. On a continuation, keep the previous fragment showing
+        // and revise it in place when the combined translation lands (6a).
         clearTimeout(this.overlayClearTimer);
-        this.overlay.clear();
+        this.overlayClearTimer = null;
+        if (!cont) {
+          this._finalizeOverlay("preempted"); // a new line took the screen early
+          this.overlay.clear();
+          this.sentenceLines = [];
+          this.sentenceHanzi = 0;
+        }
         this._log(
-          `LINE START #${info.hex.slice(0, 8)} px=${info.count} cl=${info.clusters}`,
+          `LINE START #${info.hex.slice(0, 8)} px=${info.count} cl=${info.clusters}` +
+            (cont ? " ↳cont" : ""),
           "start"
         );
-        if (this.cfg.translateEnabled) this._dispatchTranslate(info, token);
+        if (this.cfg.translateEnabled) this._dispatchTranslate(info, token, cont);
       } else if (type === "line-end") {
         // Do NOT bump lineToken here. A line merely ending (into silence) must
         // not drop its own in-flight translation — only a *newer* line
@@ -331,20 +349,40 @@ if (!window.CDT.__mainLoaded) {
         // still render: its translation returns after LINE END but is still the
         // latest thing said, so it shows.
         this.lastLineDurMs = info.durMs;
+        this.lastLineEndAt = performance.now();  // continuation-gap reference (6a)
         this._log(`LINE END (${info.reason}) after ${(info.durMs / 1000).toFixed(1)}s`, "end");
         if (info.reason === "empty") this._log("idle (silence)", "idle");
-        // Hold a showing overlay for a readable minimum (and at least as long as
-        // the line was up) before clearing on silence (§3a) — don't yank it off
+        // Hold a showing overlay for a readable minimum (scaled by the source
+        // hanzi behind it) before clearing on silence (§3a) — don't yank it off
         // on very short lines.
         if (this.overlay.isShowing()) {
-          this._armOverlayClear(this._overlayHoldMs(this.lastShippedText, info.durMs));
+          this._armOverlayClear(this._overlayHoldMs(this.overlayHanzi, info.durMs));
         }
       }
     }
 
     /* Grab 3 spaced frames for this line, POST to the sidecar, and overlay the
      * result — unless the line has moved on by the time we return. */
-    async _dispatchTranslate(info, token) {
+    /* Does the incoming line complete the previous one (split sentence, 6a)?
+     * Cheap signals only: we're mid-sentence, the previous source line didn't
+     * end in terminal punctuation, and the gap since it ended was short. The
+     * service (with the model) does the actual combining. */
+    _detectContinuation(now) {
+      const prev = this.sourceHistory.length
+        ? this.sourceHistory[this.sourceHistory.length - 1]
+        : "";
+      if (!prev || this.sentenceLines.length === 0) return false;
+      if (this.sentenceLines.length >= this.cfg.sentenceMaxLines) return false;
+      // Terminal punctuation OR a sentence-final particle (吗/吧/呢/嘛) closes an
+      // utterance even when subs carry no punctuation — so a question like
+      // 你爱我吗 doesn't bridge onto its answer. (The model is the backstop for
+      // turns these cheap signals miss.)
+      if (/[。！？!?…吗吧呢嘛]$/.test(prev)) return false;
+      const gap = this.lastLineEndAt ? now - this.lastLineEndAt : Infinity;
+      return gap <= this.cfg.continuationGapMs;
+    }
+
+    async _dispatchTranslate(info, token, cont) {
       const frameId = this.frameCounter;
       const frames = [];
       for (let i = 0; i < 3; i++) {
@@ -364,15 +402,25 @@ if (!window.CDT.__mainLoaded) {
         targetLang: this.cfg.targetLang,
         frameId,
         lastShippedText: this.lastShippedText,
-        contextLines: this.sourceHistory.slice(-3), // last 2-3 source lines (6b)
+        // Continuation: hand the service the sentence so far to combine (6a);
+        // otherwise the last 2-3 lines as reference (6b).
+        contextLines: cont ? this.sentenceLines.slice(-3) : this.sourceHistory.slice(-3),
+        continuation: cont,
+        label: document.title || location.hostname || "", // episode grouping in the audit log
+        videoTime: (this.capture.video && this.capture.video.currentTime) || 0,
       });
 
-      // Drop-don't-queue (invariant 3): drop ONLY if a newer line has superseded
-      // this one (token advanced). A line that merely ended into silence keeps
-      // its translation — nothing newer replaced it, so it is still the latest
-      // thing said and belongs on screen.
+      // Drop-don't-queue (invariant 3): drop ONLY if a newer line superseded this
+      // one (token advanced). A line that merely ended into silence keeps its
+      // translation — it is still the latest thing said.
       if (this.lineToken !== token) {
         if (res.ok) this.svc = "ok";
+        // Translated fine but a newer line superseded it before it could show —
+        // exactly the kind of gap worth auditing.
+        CDT.Service.logDisplay({
+          frame_id: frameId, video_time: 0, visible_ms: 0, outcome: "dropped",
+          label: (document.title || "").slice(0, 200),
+        });
         this._log("dropped stale translation (superseded by newer line)", "info");
         return;
       }
@@ -388,20 +436,28 @@ if (!window.CDT.__mainLoaded) {
         this.lastShippedText = d.source_text;
         this.lastTranslation = d.translation;
         if (d.source_text) {
-          // Grow the backward context window with the SOURCE line (6b) — never
-          // our translation of it, so a bad translation can't poison context.
+          // Grow the backward context (6b) — SOURCE only — and the in-progress
+          // sentence (6a) so the next line can be combined onto it.
           this.sourceHistory.push(d.source_text);
           if (this.sourceHistory.length > 4) this.sourceHistory.shift();
+          this.sentenceLines.push(d.source_text);
+          this.sentenceHanzi += [...d.source_text].length;
         }
-        this._showOverlay({ source: d.source_text, translation: d.translation }, token);
-        this._log(`OVERLAY [${this.cfg.targetLang}] ${d.translation}`, "start");
+        // Hold scales by the source behind what's shown: the whole sentence on a
+        // continuation (the overlay now holds the combined translation), else
+        // just this line.
+        const hanzi = cont ? this.sentenceHanzi : [...(d.source_text || "")].length;
+        this._showOverlay({ source: d.source_text, translation: d.translation }, token, hanzi, frameId);
+        this._log(`OVERLAY${cont ? " (revised)" : ""} [${this.cfg.targetLang}] ${d.translation}`, "start");
       } else if (d.status === "duplicate") {
         // Same line still up — re-show the cached translation instead of
         // re-translating (dedup as intended, §5).
         if (this.lastTranslation) {
           this._showOverlay(
             { source: d.source_text || this.lastShippedText, translation: this.lastTranslation },
-            token
+            token,
+            [...(d.source_text || this.lastShippedText || "")].length,
+            frameId
           );
         }
         this._log(`duplicate — kept "${this.lastTranslation}"`, "info");
@@ -414,15 +470,36 @@ if (!window.CDT.__mainLoaded) {
 
     /* Show an overlay and start its readable-lifetime clock. If the line is
      * already over when its translation lands (short line, or slow round-trip),
-     * arm the clear now; otherwise the line is still active and line-end arms it. */
-    _showOverlay(content, token) {
+     * arm the clear now; otherwise the line is still active and line-end arms it.
+     * hanziCount is the SOURCE length behind the shown text (a whole sentence on
+     * a continuation), which drives the hold. */
+    _showOverlay(content, token, hanziCount, frameId) {
+      // A lingering overlay (continuation revise) is being replaced — record it.
+      this._finalizeOverlay("revised");
       this.overlay.show(content);
       this.overlayShownAt = performance.now();
+      this.overlayHanzi = hanziCount || 0;
+      this.overlayFrameId = frameId != null ? frameId : null;
+      this.overlayVideoTime = (this.capture.video && this.capture.video.currentTime) || 0;
       clearTimeout(this.overlayClearTimer);
       this.overlayClearTimer = null;
       if (this.detector.state !== "active") {
-        this._armOverlayClear(this._overlayHoldMs(content.source, this.lastLineDurMs));
+        this._armOverlayClear(this._overlayHoldMs(this.overlayHanzi, this.lastLineDurMs));
       }
+    }
+
+    /* Emit a display-outcome audit event for the line currently on the overlay
+     * (if any), then forget it. Fire-and-forget; never blocks render. */
+    _finalizeOverlay(outcome) {
+      if (this.overlayFrameId == null) return;
+      CDT.Service.logDisplay({
+        frame_id: this.overlayFrameId,
+        video_time: this.overlayVideoTime,
+        visible_ms: Math.round(performance.now() - this.overlayShownAt),
+        outcome,
+        label: (document.title || "").slice(0, 200),
+      });
+      this.overlayFrameId = null;
     }
 
     /* Readable overlay lifetime, scaled to the SOURCE (hanzi) length so one rate
@@ -430,8 +507,8 @@ if (!window.CDT.__mainLoaded) {
      * so a 1-3 hanzi line isn't a flash, ceilinged so a long or garbled line
      * can't pin the overlay, and never shorter than the subtitle was on screen
      * itself (so the overlay and the burned-in hanzi stay aligned). */
-    _overlayHoldMs(sourceText, durMs) {
-      const reading = (sourceText || "").length * this.cfg.readMsPerHanzi;
+    _overlayHoldMs(hanziCount, durMs) {
+      const reading = (hanziCount || 0) * this.cfg.readMsPerHanzi;
       const readable = Math.min(this.cfg.overlayMaxMs, Math.max(this.cfg.overlayMinMs, reading));
       return Math.max(readable, durMs || 0);
     }
@@ -445,7 +522,10 @@ if (!window.CDT.__mainLoaded) {
       const remaining = Math.max(0, holdMs - (performance.now() - this.overlayShownAt));
       this.overlayClearTimer = setTimeout(() => {
         this.overlayClearTimer = null;
-        if (this.detector.state !== "active") this.overlay.clear();
+        if (this.detector.state !== "active") {
+          this._finalizeOverlay("expired"); // reading-hold elapsed, natural clear
+          this.overlay.clear();
+        }
       }, remaining);
     }
 

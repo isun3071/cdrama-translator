@@ -34,6 +34,11 @@ if (!window.CDT.util) {
     frameSpacingMs: 100,    // spacing of the 3 OCR frames (t, t+100, t+200)
     pngMaxW: 1600,          // cap width of the PNG frames sent to OCR
     overlayBilingual: false,// pure rendering toggle (invariant 2)
+
+    // Split-sentence re-translation (6a): a line "continues" the previous one if
+    // the previous didn't end in terminal punctuation and the gap was short.
+    continuationGapMs: 2500,// max gap between lines to still count as one sentence
+    sentenceMaxLines: 3,    // cap a re-translated sentence at this many lines
     // Overlay lifetime scales with the SOURCE (hanzi) length (reading speed):
     // hold = max(subtitleDuration, clamp(hanziCount * readMsPerHanzi, min, max)),
     // measured from when the overlay appears so lag extends it, not shortens it.

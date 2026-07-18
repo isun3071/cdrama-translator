@@ -17,7 +17,9 @@
 
 "use strict";
 
-const SIDECAR_URL = "http://127.0.0.1:8000/translate";
+const SIDECAR_BASE = "http://127.0.0.1:8000";
+const SIDECAR_URL = SIDECAR_BASE + "/translate";
+const LOG_URL = SIDECAR_BASE + "/log";
 const REQUEST_TIMEOUT_MS = 6000;
 
 const CONTENT_FILES = [
@@ -59,6 +61,15 @@ browser.runtime.onMessage.addListener((msg) => {
   if (msg && msg.type === "cdt-translate") {
     // Returning a Promise makes this an async response (Firefox MV2).
     return callSidecar(msg.payload);
+  }
+  if (msg && msg.type === "cdt-log-display") {
+    // Fire-and-forget audit report; don't make the content script wait.
+    fetch(LOG_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(msg.payload),
+    }).catch(() => {});
+    return undefined;
   }
   return undefined;
 });

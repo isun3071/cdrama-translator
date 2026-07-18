@@ -1,6 +1,22 @@
 """Tunables. Starting values borrowed from the videocr family (CLAUDE.md:
 "Do not tune from zero"), on a 0..1 scale where videocr used 0..100."""
 
-OCR_CONF_GATE = 0.75      # drop reads below this mean confidence (videocr's ~75)
+# Drop reads below this mean confidence. Lowered from videocr's 0.75: short CJK
+# lines score systematically lower (fewer glyphs), and with masking cleaning the
+# input, 0.75 dropped correct reads like 走吧 (0.54) / 测试一下 (0.70). The
+# 3-frame vote + CONSENSUS_FLOOR are the real garbage filters; this is a floor.
+# (A length-aware gate would be more precise — a later refinement.)
+OCR_CONF_GATE = 0.50
 DEDUP_SIMILARITY = 80     # >= this % similar to last shipped line = duplicate
 CONSENSUS_FLOOR = 0.5     # if the 3 reads agree less than this, treat as no clean text
+
+# Mask-before-OCR (DOCUMENTATION.md §4): background-subtract the raw crop so
+# moving clutter can't be read as text. Thresholds mirror the extension's
+# detector defaults (near-white fill confirmed by a nearby dark stroke).
+OCR_MASK = True
+OCR_WHITE_MIN = 210       # near-white subtitle fill: min(r,g,b) >= this
+OCR_DARK_MAX = 80         # dark stroke: max(r,g,b) <= this
+OCR_STROKE_RADIUS = 3     # a fill pixel is kept only if dark stroke is within this
+# Keep 0. A black border on the masked image makes PP-OCR's DBNet detection
+# post-processing explode: measured ~40ms/frame at pad=0 vs ~1200ms at pad>=6.
+OCR_MASK_PAD = 0

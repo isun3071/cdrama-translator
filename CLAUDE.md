@@ -39,13 +39,18 @@ Request (extension -> service):
   "target_lang": "en",
   "frame_id": 4821,
   "last_shipped_text": "<what the extension last displayed>",
-  "context_lines": ["<prev source line>", "<prev-1 source line>"]
+  "context_lines": ["<prev source line>", "<prev-1 source line>"],
+  "continuation": false,
+  "label": "<page title, optional — for the audit log only>"
 }
 ```
 
 `context_lines` is the last 2-3 **source** (hanzi) lines, as reference for
 context-aware decoding (DOCUMENTATION.md 6a/6b). Source only, never our own
-translations. The service still translates only the current line.
+translations. `continuation` is true when the extension judges this line
+completes the previous one (split sentence): the service then renders
+context_lines + this line as one sentence (re-translation, 6a). Otherwise the
+service translates only the current line.
 
 Response (service -> extension):
 ```json
