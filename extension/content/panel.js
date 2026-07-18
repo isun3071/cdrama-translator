@@ -68,6 +68,11 @@ if (!window.CDT.Panel) {
       font: inherit; resize: vertical; user-select: text; min-height: 34px;
     }
     textarea.ctxta:focus { outline: none; border-color: #5a7de8; }
+    .ctxbar { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
+    .ctxstatus { color: #667; font-size: 10px; }
+    .ctxstatus.dirty { color: #e8c95a; }
+    button:disabled { opacity: .5; cursor: default; }
+    button:disabled:hover { background: #262a36; color: #cfd3dd; }
     label.chkbox { display: flex; align-items: center; gap: 4px; color: #99a; cursor: pointer; }
     .slider { display: flex; align-items: center; gap: 7px; margin: 4px 0; }
     .slider label { width: 88px; color: #99a; }
@@ -247,20 +252,44 @@ if (!window.CDT.Panel) {
       trow.appendChild(biLabel);
       body.appendChild(trow);
 
-      // Show/episode context (optional): user-supplied background handed to the
-      // service as reference for every line (context_note). Empty = off. Written
-      // straight onto the shared cfg, like the sliders, and read at send time.
+      // Show/episode context (optional). Edited as a DRAFT; an explicit Save commits
+      // it to cfg.contextNote, so an accidental edit never changes what's sent until
+      // you click Save. The saved note is injected server-side into the cached system
+      // prefix (prefilled once per session, not re-billed per line). Save also logs a
+      // confirmation, so you can see it went active.
       const ctxWrap = this._el("div", "ctxnote");
       ctxWrap.appendChild(this._el("div", "cv-label", "show / episode context (optional)"));
       this.ctxNote = document.createElement("textarea");
       this.ctxNote.className = "ctxta";
-      this.ctxNote.rows = 2;
-      this.ctxNote.maxLength = 1000;
+      this.ctxNote.rows = 3;
+      this.ctxNote.maxLength = 10000;
       this.ctxNote.placeholder =
-        "e.g. 1960s period military drama, formal register. Characters: 傅正川=Fu Zhengchuan, 彩兰=Cailan.";
+        "Paste the show + episode summary, key character names (傅正川=Fu Zhengchuan), register…";
       this.ctxNote.value = this.cfg.contextNote || "";
-      this.ctxNote.addEventListener("input", () => { this.cfg.contextNote = this.ctxNote.value; });
       ctxWrap.appendChild(this.ctxNote);
+
+      const ctxBar = this._el("div", "ctxbar");
+      this.ctxSaveBtn = this._el("button", "", "Save context");
+      this.ctxStatus = this._el("span", "ctxstatus");
+      const paintCtx = () => {
+        const draft = this.ctxNote.value;
+        const dirty = draft !== (this.cfg.contextNote || "");
+        this.ctxSaveBtn.disabled = !dirty;
+        this.ctxSaveBtn.classList.toggle("on", dirty);
+        this.ctxStatus.textContent =
+          (dirty ? "unsaved" : draft ? "saved" : "empty") + ` · ${draft.length}/10000`;
+        this.ctxStatus.classList.toggle("dirty", dirty);
+      };
+      this.ctxNote.addEventListener("input", paintCtx);
+      this.ctxSaveBtn.addEventListener("click", () => {
+        this.cfg.contextNote = this.ctxNote.value;               // only Save commits it
+        paintCtx();
+        this.log(`context saved (${this.ctxNote.value.length} chars) — active from the next line`, "info");
+      });
+      ctxBar.appendChild(this.ctxSaveBtn);
+      ctxBar.appendChild(this.ctxStatus);
+      ctxWrap.appendChild(ctxBar);
+      paintCtx();
       body.appendChild(ctxWrap);
 
       this.fbBtn = this._el("button", "warn", "Enable screen-capture fallback");

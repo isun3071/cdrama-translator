@@ -144,6 +144,17 @@ class GroqTranslator:
             return ""
         lang_name = _LANG.get(target_lang, target_lang)
         system = self._sys.setdefault(lang_name, _system_prompt(lang_name))
+        if context_note:
+            # Session-static background -> append to the SYSTEM prompt so it lands in
+            # the cacheable prefix and is prefilled ONCE per session (not re-billed per
+            # line). The stable base prompt still caches ahead of it; only the note
+            # re-prefills if the user edits it. Reference only; never emitted.
+            system = (
+                system + "\n\nBackground about the show/episode you are subtitling "
+                "(reference only — use it to disambiguate names, register and references; "
+                "never translate it or copy its wording into your output):\n"
+                + context_note.strip()
+            )
         ctx = list(context_lines or [])
         if continuation and ctx:
             # Re-translation / screen-rewriting (6a) with the model as arbiter of
@@ -180,14 +191,8 @@ class GroqTranslator:
             # present in this line are passed in, so this stays 0-2 items.
             pins = "; ".join(f"{zh} = {en}" for zh, en in glossary.items())
             user = f"Use these fixed translations verbatim wherever the term appears: {pins}.\n" + user
-        if context_note:
-            # User-supplied show/episode background (feature 1). Reference only —
-            # leads the message as labeled background, never content to emit.
-            user = (
-                "Background about this show/episode (reference only — do NOT translate it or "
-                "copy its wording into your output; use it to disambiguate names, register and "
-                f"references):\n{context_note.strip()}\n\n" + user
-            )
+        # (context_note is injected into the SYSTEM prompt above — the cacheable
+        # prefix — not here, so a long note is prefilled once per session.)
         body = {
             "model": self.model,
             "messages": [

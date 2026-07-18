@@ -91,6 +91,8 @@ def pipeline(rows: list[dict], n: int) -> None:
         print(f"     voted:  {r.get('source_text','')}   (conf {r.get('confidence')})")
         if r.get("context_lines"):
             print(f"     ctx:    {' / '.join(r['context_lines'])}")
+        if r.get("context_note"):
+            print(f"     note:   {r['context_note'][:90]}")
         print(f"     -> {r.get('translation') or '(none)'}   [display: {disp_s}]")
 
 

@@ -29,7 +29,7 @@ if (!window.CDT.Service) {
             last_shipped_text: lastShippedText || "",
             context_lines: contextLines || [],
             continuation: !!continuation,
-            context_note: (contextNote || "").slice(0, 1000),
+            context_note: (contextNote || "").slice(0, 10000),
             label: (label || "").slice(0, 200),
             video_time: videoTime || 0,
           },
