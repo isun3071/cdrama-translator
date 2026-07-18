@@ -1,0 +1,186 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>CDT detector test harness</title>
+<!--
+  Deterministic target for the session-1 detector. No cdrama clip needed.
+
+  A canvas draws a constantly-moving mid-gray background (to prove the mask
+  ignores background motion) plus, on demand, a burned-in-style subtitle line
+  (white fill + dark stroke). The canvas is piped into a real <video> element
+  via captureStream(), so the extension's <video> fast path grabs it exactly
+  as it would a YouTube player.
+
+  Use it: load the extension, open this file in Firefox, click the toolbar
+  button, Draw box over the subtitle band, then click the mode buttons and
+  watch the panel + console react.
+-->
+<style>
+  body { margin: 0; background: #0b0c10; color: #d8dae0;
+         font: 14px/1.5 system-ui, sans-serif; }
+  .wrap { max-width: 980px; margin: 18px auto; padding: 0 16px; }
+  h1 { font-size: 17px; margin: 0 0 4px; color: #fff; }
+  p.sub { margin: 0 0 14px; color: #8a93a8; font-size: 13px; }
+  #stage { position: relative; width: 960px; max-width: 100%; }
+  video { width: 960px; max-width: 100%; display: block; background: #000;
+          border: 1px solid #2c2f3a; border-radius: 6px; }
+  .controls { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0; }
+  button { background: #262a36; color: #cfd3dd; border: 1px solid #3a3f4f;
+           border-radius: 6px; padding: 8px 13px; cursor: pointer; font: inherit; }
+  button:hover { background: #323748; color: #fff; }
+  button.on { background: #1e4023; border-color: #2f6b3e; color: #8fe0a2; }
+  button.warn.on { background: #4a3420; border-color: #6b4a2a; color: #f0b06a; }
+  .mode { display: inline-block; margin-left: 8px; padding: 2px 9px; border-radius: 9px;
+          background: #2a2d38; color: #9fb0d0; font-size: 12px; font-weight: 700; }
+  .hint { color: #667; font-size: 12px; margin-top: 10px; }
+  code { background: #1a1c24; padding: 1px 5px; border-radius: 3px; color: #b9c0d0; }
+</style>
+
+<div class="wrap">
+  <h1>CDT detector test harness <span class="mode" id="modeLabel">silence</span></h1>
+  <p class="sub">Moving background + on-demand burned-in subtitle. Feeds the extension's real <code>&lt;video&gt;</code> capture path.</p>
+
+  <div id="stage">
+    <video id="out" muted playsinline autoplay></video>
+  </div>
+
+  <div class="controls">
+    <button data-mode="lineA">Line A (八个字幕测试)</button>
+    <button data-mode="lineB">Line B (换一行新的台词)</button>
+    <button data-mode="lineC">Line C (short 短句)</button>
+    <button data-mode="silence" class="on">Silence</button>
+    <button data-mode="flash" class="warn">White flash</button>
+    <button data-mode="explosion" class="warn">Explosion churn</button>
+    <button id="auto">▶ Auto demo</button>
+  </div>
+
+  <p class="hint">
+    Expected: A/B/C each fire one <code>LINE START</code> (+ <code>LINE END (replaced)</code> when switching).
+    Silence → <code>LINE END (empty)</code> + <code>idle</code>. Flash / Explosion → <code>rejected not-text</code>, never a LINE START.
+    Draw the box tight over the text band (bottom ~20% here).
+  </p>
+</div>
+
+<script>
+  "use strict";
+  const W = 960, H = 540;
+  const cv = document.createElement("canvas");
+  cv.width = W; cv.height = H;
+  const ctx = cv.getContext("2d");
+  const video = document.getElementById("out");
+  const modeLabel = document.getElementById("modeLabel");
+
+  let mode = "silence";
+  let frame = 0;
+
+  const LINES = {
+    lineA: "八个字幕测试行",
+    lineB: "换一行新的台词",
+    lineC: "短句",
+  };
+
+  // Deterministic PRNG so "explosion" churns differently each frame but
+  // reproducibly across runs.
+  function rng(seed) {
+    let a = seed >>> 0;
+    return () => {
+      a = (a + 0x6d2b79f5) | 0;
+      let t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  function drawBackground() {
+    // Moving mid-gray blocks — constant motion, but tones stay clear of the
+    // near-white (>=210) and dark (<=80) thresholds so they never mask in.
+    const r = rng(frame * 2654435761);
+    const cols = 12, rows = 7, cw = W / cols, ch = H / rows;
+    for (let y = 0; y < rows; y++) {
+      for (let x = 0; x < cols; x++) {
+        const g = 95 + Math.floor(r() * 70); // 95..165
+        ctx.fillStyle = `rgb(${g},${g - 6},${g + 4})`;
+        const jitter = Math.sin((frame + x * 7 + y * 13) * 0.15) * 6;
+        ctx.fillRect(x * cw + jitter, y * ch, cw + 1.5, ch + 1.5);
+      }
+    }
+  }
+
+  function drawSubtitle(text) {
+    ctx.font = "700 52px 'Noto Sans CJK SC', 'Noto Serif CJK SC', 'AR PL UMing CN', 'Microsoft YaHei', system-ui, sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    const x = W / 2, y = H * 0.86;
+    // Dark synthetic stroke around a near-white fill = the subtitle signature.
+    ctx.lineJoin = "round";
+    ctx.lineWidth = 7;
+    ctx.strokeStyle = "#080808";
+    ctx.strokeText(text, x, y);
+    ctx.fillStyle = "#f6f6f6";
+    ctx.fillText(text, x, y);
+  }
+
+  function drawFlash() {
+    ctx.fillStyle = "#f4f4f4";
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  function drawExplosion() {
+    ctx.fillStyle = "#161616";
+    ctx.fillRect(0, 0, W, H);
+    const r = rng(frame * 40503 + 7);
+    for (let i = 0; i < 16; i++) {
+      ctx.fillStyle = `rgba(245,245,245,${0.6 + r() * 0.4})`;
+      const bw = 30 + r() * 140, bh = 20 + r() * 90;
+      ctx.fillRect(r() * (W - bw), H * 0.6 + r() * (H * 0.35 - bh), bw, bh);
+    }
+  }
+
+  function render() {
+    frame++;
+    drawBackground();
+    if (mode === "lineA" || mode === "lineB" || mode === "lineC") drawSubtitle(LINES[mode]);
+    else if (mode === "flash") drawFlash();
+    else if (mode === "explosion") drawExplosion();
+    // silence: background only
+    requestAnimationFrame(render);
+  }
+
+  function setMode(m) {
+    mode = m;
+    modeLabel.textContent = m === "lineA" ? "line A"
+      : m === "lineB" ? "line B" : m === "lineC" ? "line C" : m;
+    document.querySelectorAll("button[data-mode]").forEach((b) =>
+      b.classList.toggle("on", b.dataset.mode === m));
+  }
+
+  document.querySelectorAll("button[data-mode]").forEach((b) =>
+    b.addEventListener("click", () => { stopAuto(); setMode(b.dataset.mode); }));
+
+  // Auto demo: walks the interesting transitions on a timer.
+  let autoTimer = null;
+  const SCRIPT = [
+    ["silence", 1500], ["lineA", 2500], ["lineB", 2500], ["lineC", 2000],
+    ["silence", 1500], ["flash", 1200], ["silence", 1200],
+    ["lineA", 2000], ["explosion", 1500], ["silence", 1500],
+  ];
+  function runAuto(i = 0) {
+    const [m, ms] = SCRIPT[i % SCRIPT.length];
+    setMode(m);
+    autoTimer = setTimeout(() => runAuto(i + 1), ms);
+  }
+  function stopAuto() {
+    if (autoTimer) { clearTimeout(autoTimer); autoTimer = null; }
+    document.getElementById("auto").classList.remove("on");
+  }
+  document.getElementById("auto").addEventListener("click", (e) => {
+    if (autoTimer) { stopAuto(); }
+    else { e.target.classList.add("on"); runAuto(0); }
+  });
+
+  // Pipe the canvas into the <video> so the extension's fast path sees a
+  // real player element with valid videoWidth/videoHeight.
+  const stream = cv.captureStream(30);
+  video.srcObject = stream;
+  video.play().catch(() => {});
+  render();
+</script>
