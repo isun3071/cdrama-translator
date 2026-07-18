@@ -15,15 +15,24 @@ from __future__ import annotations
 import base64
 import binascii
 import logging
+import time
+from datetime import datetime, timezone
+from pathlib import Path
 
+from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+# Load the repo-root .env (GROQ_API_KEY etc.) before the translator is built.
+# Explicit path so it works regardless of the process's cwd.
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+
+import audit_log
 from config import CONSENSUS_FLOOR, OCR_CONF_GATE
-from contract import TranslateRequest, TranslateResponse
+from contract import DisplayEvent, TranslateRequest, TranslateResponse
 from dedup import is_duplicate
-from ocr import MockOcr, OcrEngine
-from translate import MockTranslator, Translator
+from ocr import OcrEngine, make_ocr
+from translate import Translator, make_translator
 from vote import consensus_ratio, majority_vote
 
 log = logging.getLogger("sidecar")
@@ -43,8 +52,8 @@ app.add_middleware(
 # Warm singletons (CLAUDE.md: keep the OCR model warm across requests). Swapping
 # these two lines for PaddleOcr() / GroqTranslator() is the entire OCR-swap and
 # provider-swap; nothing below mentions an implementation.
-ocr: OcrEngine = MockOcr()
-translator: Translator = MockTranslator()
+ocr: OcrEngine = make_ocr()               # RapidOCR if available, else mock
+translator: Translator = make_translator()  # Groq if GROQ_API_KEY set, else mock
 
 
 def _decode(frame_b64: str) -> bytes:
@@ -60,14 +69,62 @@ def health() -> dict:
         "ok": True,
         "ocr": type(ocr).__name__,
         "translator": type(translator).__name__,
+        "model": getattr(translator, "model", None),
     }
+
+
+_PROVIDER = {"GroqTranslator": "groq", "MockTranslator": "mock", "OllamaTranslator": "ollama"}
+
+
+def _audit_entry(req: TranslateRequest, resp: TranslateResponse, raw_reads: list, latency_ms: int) -> dict:
+    # Per-stage record, so a bad output can be traced to the stage it went wrong:
+    # raw per-frame OCR reads -> voted source_text -> context/continuation -> translation.
+    return {
+        "stage": "translate",
+        "ts": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+        "video_time": req.video_time,
+        "label": req.label,
+        "frame_id": resp.frame_id,
+        "target_lang": req.target_lang,
+        "status": resp.status,
+        "reads": raw_reads,                 # the 3 raw frames, pre-vote: [{text, conf}]
+        "source_text": resp.source_text,    # after per-character majority vote
+        "confidence": resp.confidence,      # mean of the contributing reads
+        "context_lines": req.context_lines,
+        "continuation": req.continuation,   # candidate-to-bridge flag (↳cont)
+        "translation": resp.translation,
+        "duplicate": resp.duplicate,
+        "latency_ms": latency_ms,
+        "ocr": type(ocr).__name__,
+        "provider": _PROVIDER.get(type(translator).__name__, type(translator).__name__.lower()),
+        "model": getattr(translator, "model", None),
+    }
+
+
+@app.post("/log")
+def log_display(ev: DisplayEvent) -> dict:
+    """Append a client-side display outcome for a line (joined to /translate by
+    frame_id in the audit). Fire-and-forget from the extension."""
+    audit_log.append({
+        "stage": "display",
+        "ts": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+        "frame_id": ev.frame_id,
+        "video_time": ev.video_time,
+        "visible_ms": ev.visible_ms,
+        "outcome": ev.outcome,
+        "label": ev.label,
+    })
+    return {"ok": True}
 
 
 @app.post("/translate", response_model=TranslateResponse)
 def translate(req: TranslateRequest) -> TranslateResponse:
+    t0 = time.perf_counter()
     resp = TranslateResponse(frame_id=req.frame_id)
+    raw_reads: list = []
     try:
         reads = ocr.read_frames([_decode(f) for f in req.frames])
+        raw_reads = [{"text": r.text, "conf": round(r.confidence, 3)} for r in reads]
         texts = [r.text for r in reads if r.text]
 
         voted = majority_vote(texts)
@@ -92,7 +149,7 @@ def translate(req: TranslateRequest) -> TranslateResponse:
             return resp
 
         resp.translation = translator.translate(
-            voted, req.source_lang, req.target_lang, req.context_lines
+            voted, req.source_lang, req.target_lang, req.context_lines, req.continuation
         )
         resp.status = "ok"
         return resp
@@ -101,4 +158,8 @@ def translate(req: TranslateRequest) -> TranslateResponse:
         # contract JSON, never a 500. Degrade to no_text and log for us.
         log.exception("translate pipeline failed for frame_id=%s", req.frame_id)
         resp.status = "no_text"
-        return resp
+    finally:
+        # Every path (incl. the early returns above) is audited — the finally
+        # runs before the function actually returns.
+        audit_log.append(_audit_entry(req, resp, raw_reads, round((time.perf_counter() - t0) * 1000)))
+    return resp

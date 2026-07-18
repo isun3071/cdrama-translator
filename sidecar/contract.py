@@ -29,9 +29,33 @@ class TranslateRequest(BaseModel):
     last_shipped_text: str = ""
     # Last 2-3 SOURCE (hanzi) lines, as reference for context-aware decoding
     # (DOCUMENTATION.md 6a/6b). Source lines only, never our own translations of
-    # them, so a bad earlier translation can't poison later context. The service
-    # still translates only the current line; these are reference.
+    # them, so a bad earlier translation can't poison later context.
     context_lines: list[str] = Field(default_factory=list, max_length=5)
+    # True when the extension judges this line completes the previous one (split
+    # sentence): the service then renders context_lines + this line as one
+    # sentence (re-translation / screen-rewriting, 6a). Default: translate this
+    # line alone with context_lines as reference.
+    continuation: bool = False
+    # Optional free-text label (the extension sends the page title) so the audit
+    # log can group lines by episode. Logging only; never affects translation.
+    label: str = Field(default="", max_length=200)
+    # Video position (seconds) when the frames were grabbed, so a logged line can
+    # be jumped back to in the player. Logging only.
+    video_time: float = Field(default=0.0, ge=0.0)
+
+
+class DisplayEvent(BaseModel):
+    """Client-side display outcome for a line, reported after the fact (the
+    overlay's fate is only known once it clears). Correlated to a TranslateResponse
+    by frame_id in the audit log. Logging only — never part of the render path."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    frame_id: int = Field(ge=0)
+    video_time: float = Field(default=0.0, ge=0.0)
+    visible_ms: int = Field(default=0, ge=0)
+    outcome: Literal["expired", "preempted", "revised", "replaced", "dropped", "cleared"] = "expired"
+    label: str = Field(default="", max_length=200)
 
 
 class TranslateResponse(BaseModel):

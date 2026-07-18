@@ -17,7 +17,7 @@ if (!window.CDT.Service) {
     /* frames: array of base64 PNG strings (1-3, spaced t/t+100/t+200).
      * Returns { ok: true, data: <TranslateResponse> } or
      *         { ok: false, error, detail? }. Never throws. */
-    async translate({ frames, sourceLang, targetLang, frameId, lastShippedText, contextLines }) {
+    async translate({ frames, sourceLang, targetLang, frameId, lastShippedText, contextLines, continuation, label, videoTime }) {
       try {
         const res = await browser.runtime.sendMessage({
           type: "cdt-translate",
@@ -28,11 +28,24 @@ if (!window.CDT.Service) {
             frame_id: frameId,
             last_shipped_text: lastShippedText || "",
             context_lines: contextLines || [],
+            continuation: !!continuation,
+            label: (label || "").slice(0, 200),
+            video_time: videoTime || 0,
           },
         });
         return res || { ok: false, error: "no-response" };
       } catch (e) {
         return { ok: false, error: "messaging", detail: e.message };
+      }
+    },
+
+    /* Fire-and-forget display outcome for a line (audit only). Never awaited on
+     * a render path; failures are swallowed. */
+    logDisplay(event) {
+      try {
+        browser.runtime.sendMessage({ type: "cdt-log-display", payload: event });
+      } catch (e) {
+        /* logging must never disturb playback */
       }
     },
   };

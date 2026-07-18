@@ -56,6 +56,7 @@ def main() -> int:
         print("  cd sidecar && .venv/bin/python -m uvicorn app:app --port 8000")
         return 2
     print(f"health: {health}\n")
+    is_groq = health.get("translator") == "GroqTranslator"
 
     three = [PNG_1x1, PNG_1x1, PNG_1x1]
 
@@ -67,7 +68,11 @@ def main() -> int:
     check("normal -> 200", code == 200, str(code))
     check("normal -> status ok", r.get("status") == "ok", r.get("status"))
     check("vote overruled misread -> clean line", r.get("source_text") == "你是怎么忍住不娶的呢", r.get("source_text"))
-    check("translation present + tagged mock", r.get("translation", "").startswith("[en·mock]"), r.get("translation"))
+    if is_groq:
+        tr = r.get("translation", "")
+        check("translation present (real Groq)", bool(tr) and "mock" not in tr, tr)
+    else:
+        check("translation present + tagged mock", r.get("translation", "").startswith("[en·mock]"), r.get("translation"))
     check("confidence is mean of reads (~0.913)", abs(r.get("confidence", 0) - 0.913) < 0.01, str(r.get("confidence")))
     voted = r.get("source_text", "")
 
@@ -103,7 +108,8 @@ def main() -> int:
         "context_lines": ["我昨天", "去了图书馆"],
     })
     check("context_lines accepted", code == 200, str(code))
-    check("mock reflects 2 context lines", "·ctx2]" in r.get("translation", ""), r.get("translation"))
+    if not is_groq:
+        check("mock reflects 2 context lines", "·ctx2]" in r.get("translation", ""), r.get("translation"))
 
     # 8. too many context_lines -> 422 (bounded per contract).
     code, r = post("/translate", {

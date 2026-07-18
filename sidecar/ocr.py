@@ -8,8 +8,20 @@ is what keeps the Shape B -> Shape A (wasm) swap invisible to the extension.
 
 from __future__ import annotations
 
+import logging
+import os
 from dataclasses import dataclass
 from typing import Protocol
+
+from config import (
+    OCR_DARK_MAX,
+    OCR_MASK,
+    OCR_MASK_PAD,
+    OCR_STROKE_RADIUS,
+    OCR_WHITE_MIN,
+)
+
+log = logging.getLogger("sidecar.ocr")
 
 
 @dataclass
@@ -71,3 +83,103 @@ class MockOcr:
             conf = _PER_FRAME_CONF[i] if i < len(_PER_FRAME_CONF) else 0.9
             out.append(OcrRead(text, conf))
         return out
+
+
+def mask_for_ocr(
+    bgr,
+    white_min: int = OCR_WHITE_MIN,
+    dark_max: int = OCR_DARK_MAX,
+    stroke_radius: int = OCR_STROKE_RADIUS,
+    pad: int = OCR_MASK_PAD,
+):
+    """Background-subtract a raw crop before OCR (DOCUMENTATION.md §4).
+
+    Keep the near-white subtitle fill that sits next to a dark stroke (plus its
+    stroke and anti-aliased edge), flatten everything else to black. This is the
+    same isolate-the-text-layer step the extension runs for change detection,
+    re-derived service-side at OCR resolution so moving clutter can't be read as
+    a stray glyph. Preserves the text's original pixels (not a hard binary) so
+    PP-OCR sees a natural white-on-dark line. Returns a BGR image.
+    """
+    import cv2
+    import numpy as np
+
+    b, g, r = cv2.split(bgr)
+    mn = np.minimum(np.minimum(b, g), r)
+    mx = np.maximum(np.maximum(b, g), r)
+    white = (mn >= white_min).astype(np.uint8)
+    dark = (mx <= dark_max).astype(np.uint8)
+
+    k = 2 * stroke_radius + 1
+    ell = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
+    text = cv2.bitwise_and(white, cv2.dilate(dark, ell))  # fill bordered by stroke
+    text = cv2.morphologyEx(
+        text, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    )
+    # Widen to recover the stroke + anti-aliased glyph edge, so characters stay
+    # whole rather than eroding to their cores.
+    region = cv2.dilate(text, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)))
+
+    out = np.zeros_like(bgr)
+    m = region.astype(bool)
+    out[m] = bgr[m]
+    if pad:
+        out = cv2.copyMakeBorder(out, pad, pad, pad, pad, cv2.BORDER_CONSTANT, value=(0, 0, 0))
+    return out
+
+
+class RapidOcrEngine:
+    """Real OCR: RapidOCR (ONNX Runtime + PP-OCR models), strong on CJK. This is
+    the ONNX/PP-OCR pipeline the wasm Shape A will mirror, so Shape B is a
+    stepping stone toward it. The model is loaded once and kept warm across
+    requests (CLAUDE.md). With OCR_MASK on, the crop is background-subtracted
+    (mask_for_ocr) before recognition."""
+
+    def __init__(self) -> None:
+        import cv2
+        import numpy as np
+        from rapidocr_onnxruntime import RapidOCR
+
+        self._cv2 = cv2
+        self._np = np
+        self._engine = RapidOCR()
+
+    def read_frames(self, frames: list[bytes]) -> list[OcrRead]:
+        return [self._read_one(f) for f in frames]
+
+    def _read_one(self, png: bytes) -> OcrRead:
+        if len(png) < 8:
+            return OcrRead("", 0.0)
+        img = self._cv2.imdecode(
+            self._np.frombuffer(png, self._np.uint8), self._cv2.IMREAD_COLOR
+        )
+        if img is None:
+            return OcrRead("", 0.0)
+        if OCR_MASK:
+            img = mask_for_ocr(img)
+        result, _elapse = self._engine(img)
+        if not result:
+            return OcrRead("", 0.0)
+        # A subtitle crop can yield several boxes; order them left-to-right and
+        # join with no separator (hanzi carry no spaces).
+        items = sorted(result, key=lambda it: min(p[0] for p in it[0]))
+        # Strip ASCII + ideographic (　) whitespace PP-OCR sometimes appends.
+        text = "".join((it[1] or "") for it in items).strip(" \t\r\n　")
+        scores = [float(it[2]) for it in items if it[2] is not None]
+        conf = sum(scores) / len(scores) if scores else 0.0
+        return OcrRead(text, conf)
+
+
+def make_ocr() -> OcrEngine:
+    """RapidOCR if it imports (and not forced off), else the mock. CDT_OCR=mock
+    forces the mock for offline / contract testing."""
+    if os.getenv("CDT_OCR", "").strip().lower() == "mock":
+        log.info("ocr: MockOcr (forced by CDT_OCR=mock)")
+        return MockOcr()
+    try:
+        engine = RapidOcrEngine()
+        log.info("ocr: RapidOcrEngine")
+        return engine
+    except Exception as e:
+        log.warning("ocr: RapidOCR unavailable, using MockOcr (%s)", e)
+        return MockOcr()
