@@ -100,16 +100,46 @@ just the final translation:
 Analyse with `audit.py` — it defaults to the **most recent run**:
 
 ```
-python audit.py                  # stats for the latest run: status, confidence, latency, display outcomes
+python audit.py                  # quick stats: status, confidence, latency, display outcomes
 python audit.py --all            # combine every run in the log dir
 python audit.py --pipeline 20    # last 20 lines' full per-stage trace (reads -> voted -> ctx -> translation -> display)
-python audit.py --judge 40       # LLM-judge a sample for accuracy (1-5 + flagged suspects)
+python audit.py --metrics        # the accuracy STACK (OCR / consistency / latency), no LLM
+python audit.py --judge 40       # GEMBA-MQM: adequacy given the source (LLM, offline)
 python audit.py logs/cdrama-20260718-*.jsonl --label 四合院 --lang en
 ```
 
-The judge defaults to the same Groq model that produced the translations — a
-self-eval first pass, good for surfacing suspects but biased high; set
-`GROQ_JUDGE_MODEL` to a different/stronger model for a real audit.
+### Measuring accuracy: a stack, offline — not one live score
+
+For a live-OCR pipeline "accuracy" isn't a single number, and it can't be measured
+in the hot path. We have **no reference translations**, so only reference-free
+methods apply; the OCR'd source can be wrong (a faithful translation of a garbled
+line is still wrong — no MT metric catches that); the sliding context window makes
+term scatter *structural*; and a live system trades quality against latency. So the
+audit measures the **stages the log already separates**, all after the fact:
+
+- **`--metrics` (cheap, no LLM):** the whole stack from the log alone —
+  - *OCR fidelity:* confidence distribution, `no_text`/`low_confidence` share, and
+    how often the 3 frames disagreed (the vote had to arbitrate) — an OCR-uncertainty
+    proxy, because translation quality is capped by what OCR read.
+  - *terminology consistency:* identical-line stability (same source → same English?)
+    and glossary adherence (does a recurring pinned term keep its rendering?) — the
+    scatter the glossary targets, now a first-class metric.
+  - *latency & live health:* latency percentiles vs. the 600ms budget, display
+    outcomes, `dropped` (translated but never shown = wasted/late), and lines shown
+    too briefly to read. Quality × latency is the real axis for live MT.
+- **`--judge` (LLM, offline):** translation adequacy/fluency *given the source*, as
+  **GEMBA-MQM** — the model annotates errors by category (mistranslation, omission,
+  addition, terminology, grammar, punctuation, register) × severity (minor 1 / major
+  5 / critical 10), and we **aggregate several independent votes** per line
+  (`GROQ_JUDGE_VOTES`, default 3) keeping only majority-confirmed errors. Output is a
+  clean-rate, per-category incidence, and the worst lines with jump-to timestamps.
+
+The judge runs **separately on a jsonl, never live** — it's several LLM calls per
+line and would blow the bounded-lag budget on the wire. `GROQ_JUDGE_MODEL` picks the
+grader; it **defaults to the translator model** (a self-eval first pass, biased high
+— the run prints a `SELF-EVAL` warning), so set a different/stronger model for a real
+audit. The judge deliberately ignores OCR garble in the *source* (that's the OCR
+stage's job, covered by `--metrics`), so the two passes don't double-count.
 
 ## Consistency glossary
 

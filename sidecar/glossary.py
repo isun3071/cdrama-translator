@@ -64,10 +64,15 @@ class Glossary:
             self._shows[s] = _load(_SHOWS / f"{s}.json")
         return self._shows[s]
 
+    def all_terms(self, label: str) -> dict[str, str]:
+        """The merged glossary for a show — curated universal wins conflicts.
+        Public so the audit can measure per-term adherence across a run."""
+        return {**self._show(label), **self._universal}
+
     def matching(self, text: str, context: list[str] | None, label: str) -> dict[str, str]:
         """Glossary entries whose Chinese key appears in the line or its context.
         Longest keys first so an alias like 彭雄飞 wins over 雄飞."""
-        merged = {**self._show(label), **self._universal}  # curated universal wins conflicts
+        merged = self.all_terms(label)
         hay = (text or "") + " " + " ".join(context or [])
         hits: dict[str, str] = {}
         for zh, en in sorted(merged.items(), key=lambda kv: -len(kv[0])):
