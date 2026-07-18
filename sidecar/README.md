@@ -141,6 +141,31 @@ grader; it **defaults to the translator model** (a self-eval first pass, biased 
 audit. The judge deliberately ignores OCR garble in the *source* (that's the OCR
 stage's job, covered by `--metrics`), so the two passes don't double-count.
 
+### Drift judge — `drift_judge.py` (cross-line consistency only)
+
+A separate, *windowed* judge for the one thing per-line grading can't see: errors
+that arise from the **relationship between lines**. It shows a non-Qwen grader a
+window i-2…i+1 with the target marked and asks only about cross-speaker leak,
+stale-referent, register drift, tense/aspect flip, and pronoun-gender consistency.
+Leak/referent findings must name a `source_scope` — `immediate-neighbor` (the
+continuation arbiter fused adjacent lines) vs `scene-level` (the translator lost
+track of scene state). That field is the decision signal for whether a scene-level
+context intervention is warranted at all.
+
+```
+python drift_judge.py [log]              # RANDOM sample -> the population gate rate
+python drift_judge.py [log] --stratified # oversample risky windows -> SHAPE, not the gate
+```
+
+Two samples, two jobs: **random** gives the gate rate the roadmap keys on;
+**--stratified** (continuation / pronoun-context windows) characterizes shape and
+severity but over-estimates frequency, so it's never the gate. The grader defaults
+to `llama-3.3-70b-versatile` (not Qwen — avoid self-eval) and aggregates
+`GROQ_DRIFT_VOTES` votes (default 3), keeping only majority-confirmed findings.
+**Judge output is candidates, not truth** — it over-flags the same way a regex
+would, so confirmed instances are written to `<log>.drift-<mode>.verify.jsonl` with a
+`"verified": null` slot to fill in by hand before trusting the rate.
+
 ## Consistency glossary
 
 Each line is translated independently, so a recurring term (黄羊, a character
