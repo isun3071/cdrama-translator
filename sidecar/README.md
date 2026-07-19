@@ -233,6 +233,29 @@ drift and prompt effects can be genre-specific. So both `drift_judge.py` and
 Minimum before any run counts as evidence: **≥3 shows across ≥2 genres, ≥5 episodes,
 and ≥1 held-out episode.**
 
+## Re-watch track — `track.py` (offline high-quality, the other corner of the frontier)
+
+Live translation is bounded-lag / mostly-right and sees only *past* context. `track.py`
+is the opposite corner: an offline pass where a strong **teacher** model re-translates
+every logged line with a window of surrounding lines — past *and future* — the context
+the live model never had. It follows the same house rules as the live prompt (name-tag
+elision, interrogative-without-吗, no leak, register), just with better context and a
+stronger model, so the track matches the live style but reads better.
+
+```
+python track.py [log] --out mytrack.json --window 8
+env: TEACHER_MODEL (else JUDGE_MODEL), JUDGE_PROVIDER, OPENROUTER_API_KEY / GROQ_API_KEY
+```
+
+Output is the tool's **own** `frame_id`-keyed replay format (per CLAUDE.md invariant 1
+— a **local, personal** re-watch artifact, deliberately *not* a portable `.srt`, never
+shared/uploaded). Each cue carries `frame_id` (the pixel-line id), `t` (video seconds —
+when to show), `dur`, the `source` hanzi, the corrected `text`, and the original `live`
+line for comparison. The extension's replay mode plays these against the video's
+`currentTime`. Reuses `judge_llm`'s provider routing + cost tally, and doubles as the
+distillation teacher pass (full-context targets for a streaming student). *(Glossary /
+context-note injection into the teacher is a noted follow-up.)*
+
 ## Consistency glossary
 
 Each line is translated independently, so a recurring term (黄羊, a character
