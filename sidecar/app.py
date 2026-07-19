@@ -159,6 +159,7 @@ def translate(req: TranslateRequest) -> TranslateResponse:
     raw_reads: list = []
     gloss: dict = {}
     ep_id = _episode_id(req.label)
+    audit_log.set_episode(ep_id, req.label)   # rotate to a new log file when the video changes
     line_seq: int | None = None      # assigned only when the line is actually shown (ok)
     group_id: int | None = None
     try:

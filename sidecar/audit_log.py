@@ -29,10 +29,13 @@ LOG_DIR = Path(os.getenv("CDT_LOG_DIR", str(Path(__file__).resolve().parent.pare
 ENABLED = os.getenv("CDT_LOG", "1").strip().lower() not in ("0", "false", "no", "off")
 
 
-# Fixed at import = one file per run. The model tag is filled in by set_run_tag()
-# at startup (before any line is logged), so runs self-separate by model.
+# Fixed at import = the run stamp. The model tag is filled in by set_run_tag() at
+# startup; the episode slug by set_episode() whenever the video changes, so one run
+# watching several videos self-separates into a file per video.
 _STAMP = datetime.now().strftime("%Y%m%d-%H%M%S")
 _run_tag = ""
+_episode = ""
+_episode_slug = ""
 _log_path: Path | None = None
 
 
@@ -45,13 +48,35 @@ def set_run_tag(tag: str) -> None:
     _log_path = None  # re-resolve on next append
 
 
+def _slug(label: str) -> str:
+    s = "".join(c if (c.isalnum() or c in "._-" or "一" <= c <= "鿿") else "-"
+                for c in (label or "").strip())
+    while "--" in s:
+        s = s.replace("--", "-")
+    return s.strip("-")[:24]
+
+
+def set_episode(ep_id: str, label: str = "") -> None:
+    """Rotate to a per-video file when the episode changes (new video -> new file),
+    so a single run needn't be restarted per episode. Keyed on the stable episode_id;
+    the readable slug comes from the label. No-op when CDT_LOG_PATH pins one file."""
+    global _episode, _episode_slug, _log_path
+    if not ENABLED or os.getenv("CDT_LOG_PATH", "").strip():
+        return
+    if ep_id and ep_id != _episode:
+        _episode = ep_id
+        _episode_slug = _slug(label) or ep_id
+        _log_path = None  # re-resolve to the new video's file
+
+
 def _resolve_path() -> Path:
-    # CDT_LOG_PATH pins a single explicit file (used by tests); else per-run.
+    # CDT_LOG_PATH pins a single explicit file (used by tests); else per-run-per-video.
     explicit = os.getenv("CDT_LOG_PATH", "").strip()
     if explicit:
         return Path(explicit)
     suffix = f"-{_run_tag}" if _run_tag else ""
-    return LOG_DIR / f"cdrama-{_STAMP}{suffix}.jsonl"
+    ep = f"-{_episode_slug}" if _episode_slug else ""
+    return LOG_DIR / f"cdrama-{_STAMP}{suffix}{ep}.jsonl"
 
 def append(entry: dict) -> None:
     """Append one entry as a JSON line. No-op if disabled; never raises."""
