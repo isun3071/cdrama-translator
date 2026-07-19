@@ -104,6 +104,16 @@ if (!window.CDT.__mainLoaded) {
           this.cfg.overlayBilingual = on;
           this.overlay.setBilingual(on);
         },
+        onCaptureMode: (on) => {
+          this.cfg.captureMode = on;
+          if (!on) this._captureResume();   // release the player if we were holding it
+          this._log(
+            on
+              ? "capture mode ON — pausing on each line for a complete log (choppy; for building tracks/data)"
+              : "capture mode OFF — normal playback",
+            on ? "start" : "info"
+          );
+        },
         // Load a personal re-watch track (built by track.py). Returns the cue count
         // (or -1 if invalid) so the panel can show it.
         onLoadTrack: (track) => {
@@ -379,7 +389,12 @@ if (!window.CDT.__mainLoaded) {
             (cont ? " ↳cont" : ""),
           "start"
         );
-        if (this.cfg.translateEnabled) this._dispatchTranslate(info, token, cont);
+        if (this.cfg.translateEnabled) {
+          if (this.cfg.captureMode) this._capturePause();   // hold the frame until this line is logged
+          const p = this._dispatchTranslate(info, token, cont);
+          if (this.cfg.captureMode && p && typeof p.finally === "function")
+            p.finally(() => this._captureResume());
+        }
       } else if (type === "line-end") {
         // Do NOT bump lineToken here. A line merely ending (into silence) must
         // not drop its own in-flight translation — only a *newer* line
@@ -510,6 +525,28 @@ if (!window.CDT.__mainLoaded) {
       }
     }
 
+    /* Capture mode: pause the player on each new line so its OCR + translation always
+     * finishes before the next line — a reliable, complete log for building tracks or
+     * distillation data. Choppy by design; not for normal watching. Player-agnostic
+     * (standard <video> controls, no per-platform API). A safety timer guarantees the
+     * video never freezes permanently if a request stalls. */
+    _capturePause() {
+      const v = this.capture.video;
+      if (!v || this._captureHeld) return;
+      this._captureHeld = true;
+      try { v.pause(); } catch (e) { /* not all players allow it; best-effort */ }
+      clearTimeout(this._captureTimer);
+      this._captureTimer = setTimeout(() => this._captureResume(), 6000);
+    }
+
+    _captureResume() {
+      clearTimeout(this._captureTimer);
+      if (!this._captureHeld) return;
+      this._captureHeld = false;
+      const v = this.capture.video;
+      if (v && v.paused) { try { v.play(); } catch (e) { /* best-effort */ } }
+    }
+
     /* Replay: drive the overlay from the loaded track, timed to the video's
      * currentTime. Seeking-safe (the cue is looked up by time every tick); no OCR,
      * no sidecar. The overlay follows the player exactly as in live mode. */
@@ -606,6 +643,7 @@ if (!window.CDT.__mainLoaded) {
 
     destroy() {
       this.lineToken++; // make any in-flight translation drop instead of touching torn-down UI
+      this._captureResume(); // never leave the player paused if we were holding it
       clearTimeout(this.overlayClearTimer);
       clearInterval(this.timer);
       this.capture.stop();

@@ -30,6 +30,8 @@ if (!window.CDT.util) {
 
     // Translation / overlay (session 3)
     translateEnabled: true, // dispatch to the sidecar on line start
+    captureMode: false,     // pause the player on each line for a complete, unrushed capture
+                            // (choppy — an ingest mode for building logs/tracks, not watching)
     targetLang: "en",       // any target language; the point of the product
     contextNote: "",        // optional user-supplied show/episode background (context_note)
     tone: "",               // optional register lean (casual/formal/…); "" = faithful

@@ -209,6 +209,12 @@ if (!window.CDT.Panel) {
         this.pauseBtn.textContent = this.paused ? "Resume" : "Pause";
         this.cb.onPause(this.paused);
       });
+      this.captureBtn = mkBtn("Capture ✗", () => {
+        this.captureOn = !this.captureOn;
+        this.captureBtn.textContent = this.captureOn ? "Capture ✓" : "Capture ✗";
+        this.captureBtn.classList.toggle("on", this.captureOn);
+        this.cb.onCaptureMode(this.captureOn);
+      });
       body.appendChild(rows);
 
       // Translation controls (session 3).
