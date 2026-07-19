@@ -12,8 +12,10 @@ show), dur, the source hanzi, the corrected `text`, and the original `live` line
 comparison. The extension's replay mode plays these against the video's currentTime.
 
 Reuses judge_llm's provider routing + cost tally, so the teacher can be any strong
-Chinese-capable model (TEACHER_MODEL, else JUDGE_MODEL). Doubles as the distillation
-teacher pass (full-context targets for a streaming student).
+Chinese-capable model (TEACHER_MODEL, else JUDGE_MODEL). A track is a PER-EPISODE
+personal artifact. Its outputs can also seed the distillation teacher pass — but only
+across the corpus gate (>=3 shows / >=2 genres), never one show, or the student
+overfits that show (CLAUDE.md invariant 1).
 
     python track.py [log]                 # -> <log>.track.json (latest run by default)
     python track.py [log] --out mytrack.json --window 8

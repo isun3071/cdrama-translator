@@ -104,6 +104,41 @@ if (!window.CDT.__mainLoaded) {
           this.cfg.overlayBilingual = on;
           this.overlay.setBilingual(on);
         },
+        // Load a personal re-watch track (built by track.py). Returns the cue count
+        // (or -1 if invalid) so the panel can show it.
+        onLoadTrack: (track) => {
+          if (!track || track.type !== "cdt-replay-track" || !Array.isArray(track.cues)) {
+            this._log("track: not a cdt replay track", "reject");
+            return -1;
+          }
+          this.replayCues = [...track.cues].sort((a, b) => a.t - b.t);
+          this.replayCur = undefined;
+          this._log(
+            `track loaded: ${this.replayCues.length} cues${track.label ? " — " + track.label.slice(0, 40) : ""}`,
+            "info"
+          );
+          const eps = new Set(track.cues.map((c) => c.episode_id).filter(Boolean));
+          if (eps.size > 1)
+            this._log(`track spans ${eps.size} episodes — plays all by time; use a single-episode track`, "reject");
+          return this.replayCues.length;
+        },
+        // Toggle replay. Returns the actual new state (false if no track loaded).
+        onReplay: (on) => {
+          if (on && !this.replayCues) {
+            this._log("load a track first", "reject");
+            return false;
+          }
+          this.replayMode = on;
+          this.replayCur = undefined;
+          clearTimeout(this.overlayClearTimer);
+          this.overlay.clear();
+          this.svc = on ? "replay" : "off";
+          this._log(
+            on ? "replay ON — playing track (live translation paused)" : "replay OFF — back to live",
+            on ? "start" : "info"
+          );
+          return on;
+        },
       });
 
       this._logStable = rateLimit(2000, (hex, durS, px) =>
@@ -222,6 +257,9 @@ if (!window.CDT.__mainLoaded) {
           : null
       );
       this.overlay.reposition(cr);
+
+      // Replay mode drives the overlay from the loaded track instead of live OCR.
+      if (this.replayMode) return this._replayTick();
 
       if (this.paused) return;
       this.frameCounter++;
@@ -470,6 +508,37 @@ if (!window.CDT.__mainLoaded) {
       } else {
         this._log("service: no_text", "info");
       }
+    }
+
+    /* Replay: drive the overlay from the loaded track, timed to the video's
+     * currentTime. Seeking-safe (the cue is looked up by time every tick); no OCR,
+     * no sidecar. The overlay follows the player exactly as in live mode. */
+    _replayTick() {
+      const v = this.capture.video;
+      if (!v || !this.replayCues) return;
+      const cue = this._cueAt(v.currentTime);
+      if (cue === this.replayCur) return;   // same cue still showing — nothing to do
+      this.replayCur = cue;
+      if (cue) {
+        this.overlay.show({ source: cue.source, translation: cue.text });
+        this.panel.update({ state: "active", svc: "replay" });
+      } else {
+        this.overlay.clear();
+        this.panel.update({ state: "idle", svc: "replay" });
+      }
+    }
+
+    /* The cue whose [t, t+dur) window contains time `t` (seconds), else null (a gap).
+     * Binary search for the last cue starting at/before t, kept only if within dur. */
+    _cueAt(t) {
+      const c = this.replayCues;
+      let lo = 0, hi = c.length - 1, ans = -1;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        if (c[mid].t <= t) { ans = mid; lo = mid + 1; } else hi = mid - 1;
+      }
+      if (ans < 0) return null;
+      return t < c[ans].t + c[ans].dur ? c[ans] : null;
     }
 
     /* Show an overlay and start its readable-lifetime clock. If the line is

@@ -311,6 +311,42 @@ if (!window.CDT.Panel) {
       paintCtx();
       body.appendChild(ctxWrap);
 
+      // Re-watch replay: load a personal track (built by track.py) and play its
+      // corrected translations against the video's currentTime — no OCR/sidecar.
+      const rrow = this._el("div", "rows");
+      const fileInput = document.createElement("input");
+      fileInput.type = "file";
+      fileInput.accept = ".json,application/json";
+      fileInput.style.display = "none";
+      fileInput.addEventListener("change", () => {
+        const f = fileInput.files && fileInput.files[0];
+        if (!f) return;
+        const reader = new FileReader();
+        reader.onload = () => {
+          let track = null;
+          try { track = JSON.parse(reader.result); } catch (e) { /* handled below */ }
+          const n = this.cb.onLoadTrack(track);
+          this.replayStatus.textContent = n >= 0 ? `track: ${n} cues` : "track: invalid";
+          fileInput.value = "";
+        };
+        reader.readAsText(f);
+      });
+      this.root.appendChild(fileInput);
+      const loadBtn = this._el("button", "", "Load track");
+      loadBtn.addEventListener("click", () => fileInput.click());
+      rrow.appendChild(loadBtn);
+      this.replayBtn = this._el("button", "", "Replay ✗");
+      this.replayBtn.addEventListener("click", () => {
+        const on = this.cb.onReplay(!this.replayOn);   // main returns the actual new state
+        this.replayOn = !!on;
+        this.replayBtn.textContent = this.replayOn ? "Replay ✓" : "Replay ✗";
+        this.replayBtn.classList.toggle("on", this.replayOn);
+      });
+      rrow.appendChild(this.replayBtn);
+      this.replayStatus = this._el("span", "ctxstatus", "no track");
+      rrow.appendChild(this.replayStatus);
+      body.appendChild(rrow);
+
       this.fbBtn = this._el("button", "warn", "Enable screen-capture fallback");
       this.fbBtn.style.display = "none";
       this.fbBtn.style.marginBottom = "4px";
