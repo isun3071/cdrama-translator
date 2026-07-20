@@ -41,6 +41,17 @@ if (!window.CDT.Service) {
       }
     },
 
+    /* Ask the sidecar for the re-watch track bound to this page (matched by
+     * episode_id). Returns { ok, data: { found, track? } } or { ok:false }. A replay
+     * convenience only — playback needs no sidecar once cues are loaded. */
+    async getTrack(label) {
+      try {
+        return await browser.runtime.sendMessage({ type: "cdt-get-track", label: label || "" });
+      } catch (e) {
+        return { ok: false, error: "messaging" };
+      }
+    },
+
     /* Fire-and-forget display outcome for a line (audit only). Never awaited on
      * a render path; failures are swallowed. */
     logDisplay(event) {

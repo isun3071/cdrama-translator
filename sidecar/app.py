@@ -15,7 +15,9 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
+import json
 import logging
+import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -75,7 +77,10 @@ _ep_state: dict[str, dict] = {}
 
 
 def _episode_id(label: str) -> str:
-    base = (label or "").strip()
+    # Normalize volatile title bits so one video keeps one id: drop a leading
+    # "(3) " unread-count and collapse whitespace — else the id churns mid-video and
+    # breaks both log rotation and track auto-bind.
+    base = " ".join(re.sub(r"^\(\d+\)\s*", "", (label or "").strip()).split())
     return hashlib.sha1(base.encode("utf-8")).hexdigest()[:12] if base else "unknown"
 
 
@@ -150,6 +155,29 @@ def log_display(ev: DisplayEvent) -> dict:
         "label": ev.label,
     })
     return {"ok": True}
+
+
+@app.get("/track")
+def get_track(label: str = "") -> dict:
+    """Auto-bind: return the personal re-watch track whose episode matches this page
+    (episode_id = hash of the label), so the extension needn't pick a file and can't
+    load a mismatched one. {found: false} if none. A local convenience — replay
+    playback itself needs no sidecar. Newest matching track wins."""
+    ep = _episode_id(label)
+    best, best_mtime = None, -1.0
+    try:
+        for f in audit_log.LOG_DIR.glob("*.track.json"):
+            try:
+                t = json.loads(f.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if t.get("type") == "cdt-replay-track" and ep in (t.get("episode_ids") or []):
+                m = f.stat().st_mtime
+                if m > best_mtime:
+                    best, best_mtime = t, m
+    except Exception:
+        log.exception("track scan failed")
+    return {"found": True, "track": best} if best else {"found": False}
 
 
 @app.post("/translate", response_model=TranslateResponse)

@@ -114,39 +114,25 @@ if (!window.CDT.__mainLoaded) {
             on ? "start" : "info"
           );
         },
-        // Load a personal re-watch track (built by track.py). Returns the cue count
-        // (or -1 if invalid) so the panel can show it.
-        onLoadTrack: (track) => {
-          if (!track || track.type !== "cdt-replay-track" || !Array.isArray(track.cues)) {
-            this._log("track: not a cdt replay track", "reject");
-            return -1;
-          }
-          this.replayCues = [...track.cues].sort((a, b) => a.t - b.t);
-          this.replayCur = undefined;
-          this._log(
-            `track loaded: ${this.replayCues.length} cues${track.label ? " — " + track.label.slice(0, 40) : ""}`,
-            "info"
-          );
-          const eps = new Set(track.cues.map((c) => c.episode_id).filter(Boolean));
-          if (eps.size > 1)
-            this._log(`track spans ${eps.size} episodes — plays all by time; use a single-episode track`, "reject");
-          return this.replayCues.length;
-        },
-        // Toggle replay. Returns the actual new state (false if no track loaded).
+        // Manual "Load track" — thin wrapper over _loadTrack (which match-checks).
+        onLoadTrack: (track) => this._loadTrack(track, { manual: true }),
+        // Toggle replay. Turning on with no track loaded auto-binds this page's track
+        // from the sidecar. Returns the new mode state.
         onReplay: (on) => {
-          if (on && !this.replayCues) {
-            this._log("load a track first", "reject");
-            return false;
-          }
           this.replayMode = on;
           this.replayCur = undefined;
           clearTimeout(this.overlayClearTimer);
           this.overlay.clear();
           this.svc = on ? "replay" : "off";
-          this._log(
-            on ? "replay ON — playing track (live translation paused)" : "replay OFF — back to live",
-            on ? "start" : "info"
-          );
+          if (on && !this.replayCues) {
+            this._log("replay ON — finding this video's track…", "start");
+            this._autoLoadTrack(); // async; cues populate when it returns
+          } else {
+            this._log(
+              on ? "replay ON — playing loaded track (live paused)" : "replay OFF — back to live",
+              on ? "start" : "info"
+            );
+          }
           return on;
         },
       });
@@ -596,7 +582,18 @@ if (!window.CDT.__mainLoaded) {
      * no sidecar. The overlay follows the player exactly as in live mode. */
     _replayTick() {
       const v = this.capture.video;
-      if (!v || !this.replayCues) return;
+      if (!v) return;
+      // Video changed under replay (e.g. SPA navigation to a new episode) -> rebind to
+      // the new video's track so we never show another video's subtitles.
+      if (this.replayLabel != null && this._norm(document.title) !== this.replayLabel) {
+        this.replayLabel = this._norm(document.title); // set first so we don't re-trigger each tick
+        this.replayCues = null;
+        this.replayCur = undefined;
+        this.overlay.clear();
+        this._autoLoadTrack();
+        return;
+      }
+      if (!this.replayCues) return;
       const cue = this._cueAt(v.currentTime);
       if (cue === this.replayCur) return;   // same cue still showing — nothing to do
       this.replayCur = cue;
@@ -607,6 +604,59 @@ if (!window.CDT.__mainLoaded) {
         this.overlay.clear();
         this.panel.update({ state: "idle", svc: "replay" });
       }
+    }
+
+    _norm(s) {
+      return (s || "").replace(/^\(\d+\)\s*/, "").trim();   // drop YouTube "(3) " unread count
+    }
+
+    /* Load a track's cues (manual pick or sidecar auto-bind). Match-checks the label
+     * against this page so a track for a different video is refused (auto) or loudly
+     * warned (manual) — the "messed-up subtitles" guard. Returns the cue count, or -1. */
+    _loadTrack(track, opts) {
+      opts = opts || {};
+      if (!track || track.type !== "cdt-replay-track" || !Array.isArray(track.cues)) {
+        if (opts.manual) this._log("track: not a cdt replay track", "reject");
+        return -1;
+      }
+      const title = document.title || "";
+      if (track.label && title && this._norm(track.label) !== this._norm(title)) {
+        if (opts.manual)
+          this._log(`⚠ track is for "${track.label.slice(0, 40)}", not this page — loading anyway`, "reject");
+        else return -1; // auto-bind never loads a mismatch
+      }
+      this.replayCues = [...track.cues].sort((a, b) => a.t - b.t);
+      this.replayLabel = this._norm(track.label || title);
+      this.replayCur = undefined;
+      this._log(
+        `track ${opts.manual ? "loaded" : "auto-bound"}: ${this.replayCues.length} cues` +
+          (track.label ? ` — ${track.label.slice(0, 40)}` : ""),
+        "info"
+      );
+      const eps = new Set(track.cues.map((c) => c.episode_id).filter(Boolean));
+      if (eps.size > 1)
+        this._log(`track spans ${eps.size} episodes — plays all by time; use a single-episode track`, "reject");
+      return this.replayCues.length;
+    }
+
+    /* Auto-bind this page's track from the sidecar (matched by episode_id). Populates
+     * cues on success, clears them on a miss. Guarded to one poll at a time. */
+    async _autoLoadTrack() {
+      if (this._autoLoading) return false;
+      this._autoLoading = true;
+      const title = document.title || "";
+      const res = await CDT.Service.getTrack(title);
+      this._autoLoading = false;
+      if (res && res.ok && res.data && res.data.found && res.data.track) {
+        return this._loadTrack(res.data.track, { manual: false }) >= 0;
+      }
+      this.replayCues = null;
+      this.replayLabel = this._norm(title); // remember the miss so we don't re-poll every tick
+      this._log(
+        `no track for "${title.slice(0, 40)}" — build one (track.py) or Load manually`,
+        res && res.ok ? "info" : "reject"
+      );
+      return false;
     }
 
     /* The cue whose [t, t+dur) window contains time `t` (seconds), else null (a gap).

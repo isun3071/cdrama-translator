@@ -20,6 +20,7 @@
 const SIDECAR_BASE = "http://127.0.0.1:8000";
 const SIDECAR_URL = SIDECAR_BASE + "/translate";
 const LOG_URL = SIDECAR_BASE + "/log";
+const TRACK_URL = SIDECAR_BASE + "/track";
 const REQUEST_TIMEOUT_MS = 6000;
 
 const CONTENT_FILES = [
@@ -57,10 +58,30 @@ async function callSidecar(payload) {
   }
 }
 
+async function getTrack(label) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS);
+  try {
+    const resp = await fetch(TRACK_URL + "?label=" + encodeURIComponent(label || ""), {
+      signal: ctrl.signal,
+    });
+    if (!resp.ok) return { ok: false, error: `HTTP ${resp.status}` };
+    return { ok: true, data: await resp.json() };
+  } catch (e) {
+    return { ok: false, error: e.name === "AbortError" ? "timeout" : "unreachable" };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 browser.runtime.onMessage.addListener((msg) => {
   if (msg && msg.type === "cdt-translate") {
     // Returning a Promise makes this an async response (Firefox MV2).
     return callSidecar(msg.payload);
+  }
+  if (msg && msg.type === "cdt-get-track") {
+    // Auto-bind lookup: fetch this page's re-watch track from the sidecar.
+    return getTrack(msg.label);
   }
   if (msg && msg.type === "cdt-log-display") {
     // Fire-and-forget audit report; don't make the content script wait.

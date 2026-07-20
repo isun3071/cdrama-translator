@@ -266,6 +266,15 @@ continuity across the cut (no continuation bridge, stale context, or dedup leak)
 `track.py` drops re-visited lines — but a single pass is cleanest. Replay, by contrast, is
 timestamp-driven (`currentTime` lookup) and fully seek-safe on playback.
 
+**Auto-bind** (no picking, no mismatched subtitles): toggle Replay and the extension asks the
+sidecar `GET /track?label=<page title>` for the track whose `episode_id` (a normalized hash of
+the label) matches *this* page, and loads it — so you never choose a file, and a track for a
+different video is **refused** (auto) or loudly warned (manual pick). It rebinds automatically on
+SPA navigation to a new episode. Tracks must sit in the log dir (`track.py`'s default output) for
+the sidecar to find them. The `(N)` unread-count prefix and whitespace are normalized out of the
+id, so the same video keeps one identity even as its tab title flickers. Playback itself needs no
+sidecar — auto-bind is a Shape-B convenience (Shape A would use manual pick or extension storage).
+
 ## Consistency glossary
 
 Each line is translated independently, so a recurring term (黄羊, a character
