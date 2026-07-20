@@ -256,6 +256,16 @@ line for comparison. The extension's replay mode plays these against the video's
 distillation teacher pass (full-context targets for a streaming student). *(Glossary /
 context-note injection into the teacher is a noted follow-up.)*
 
+**Capturing a clean log** (a track is only as good as its log): capture in a **single
+forward pass** — turn on **capture mode** in the panel (it pauses per line so a slow
+pipeline never misses one, and pauses give clean, motion-blur-free OCR) and let it run
+start-to-end. Capture mode is *pixel-driven*, not timestamp-driven — it reacts to what's
+on screen and records `video_time`, so a monotonic pass yields a monotonic track. If you
+seek/rewind mid-capture it's handled, not fatal: the extension detects the jump and resets
+continuity across the cut (no continuation bridge, stale context, or dedup leak), and
+`track.py` drops re-visited lines — but a single pass is cleanest. Replay, by contrast, is
+timestamp-driven (`currentTime` lookup) and fully seek-safe on playback.
+
 ## Consistency glossary
 
 Each line is translated independently, so a recurring term (黄羊, a character

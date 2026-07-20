@@ -61,6 +61,28 @@ def _teacher_sys(lang: str) -> str:
     )
 
 
+def _finalize(cues: list[dict]) -> list[dict]:
+    """Sort by (episode, time), drop re-visited lines (a seek-back during capture logs
+    the same line twice at ~the same t), then set each cue's duration from the NEXT
+    cue in time order — so durations are right even if capture order wasn't monotonic."""
+    cues = sorted(cues, key=lambda c: (c["episode_id"] or "", c["t"]))
+    out: list[dict] = []
+    dropped = 0
+    for c in cues:
+        p = out[-1] if out else None
+        if (p and p["episode_id"] == c["episode_id"] and p["source"] == c["source"]
+                and abs(c["t"] - p["t"]) < 2.0):
+            dropped += 1
+            continue   # same line, ~same moment -> a re-visit, keep just one
+        out.append(c)
+    for i, c in enumerate(out):
+        nxt = out[i + 1] if i + 1 < len(out) and out[i + 1]["episode_id"] == c["episode_id"] else None
+        c["dur"] = round(_CUE_DEFAULT if not nxt else max(_CUE_MIN, min(_CUE_MAX, nxt["t"] - c["t"])), 3)
+    if dropped:
+        print(f"  deduped {dropped} re-visited line(s) (seek/rewind during capture)", file=sys.stderr)
+    return out
+
+
 def _teacher(sess, url, model, provider, lang, before, target, after) -> str:
     ctx = []
     if before:
@@ -110,25 +132,23 @@ def build(rows: list[dict], out_path: Path, target_lang: str, window: int) -> No
             except Exception as e:
                 text = r.get("translation", "") or ""   # fall back to the live line on failure
                 print(f"  (line {r.get('frame_id')}: teacher failed [{type(e).__name__}], kept live)", file=sys.stderr)
-            t = float(r.get("video_time") or 0.0)
-            nxt = ep[i + 1].get("video_time") if i + 1 < len(ep) else None
-            dur = _CUE_DEFAULT if not nxt else max(_CUE_MIN, min(_CUE_MAX, float(nxt) - t))
             cues.append({
                 "frame_id": r.get("frame_id"), "seq": r.get("line_seq"), "group": r.get("sentence_group_id"),
-                "episode_id": r.get("episode_id"), "t": round(t, 3), "dur": round(dur, 3),
+                "episode_id": r.get("episode_id"), "t": round(float(r.get("video_time") or 0.0), 3),
                 "source": r["source_text"], "text": text, "live": r.get("translation", ""),
             })
             done += 1
             if done % 25 == 0 or done == total:
                 print(f"  {done}/{total} …", file=sys.stderr)
 
+    cues = _finalize(cues)   # sort by time, dedup re-visits, set durations from time-neighbors
     label = next((r.get("label") for r in ok if r.get("label")), "") or ""
     track = {
         "type": "cdt-replay-track", "version": 1,
         "note": "PERSONAL re-watch track — local only, not a portable subtitle file (CLAUDE.md invariant 1)",
         "target_lang": target_lang, "label": label, "teacher": model,
         "episode_ids": sorted({c["episode_id"] for c in cues if c["episode_id"]}),
-        "cues": sorted(cues, key=lambda c: (c["episode_id"] or "", c["t"])),
+        "cues": cues,
     }
     out_path.write_text(json.dumps(track, ensure_ascii=False, indent=1), encoding="utf-8")
     print(f"\ntrack -> {out_path}  ({len(cues)} cues)")

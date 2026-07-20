@@ -271,6 +271,10 @@ if (!window.CDT.__mainLoaded) {
       // Replay mode drives the overlay from the loaded track instead of live OCR.
       if (this.replayMode) return this._replayTick();
 
+      // If the user jumped around (seek/rewind/scrub), reset continuity so a
+      // continuation bridge, context window, or dedup never spans the cut.
+      this._checkSeek(now);
+
       if (this.paused) return;
       this.frameCounter++;
 
@@ -545,6 +549,46 @@ if (!window.CDT.__mainLoaded) {
       this._captureHeld = false;
       const v = this.capture.video;
       if (v && v.paused) { try { v.play(); } catch (e) { /* best-effort */ } }
+    }
+
+    /* Detect a discontinuity in the video timeline (seek / rewind / fast-forward
+     * jump) by comparing how far currentTime moved against how much wall-clock time
+     * passed at the current playbackRate. Robust to pause, stall and rate changes
+     * (they track per-tick); only a genuine jump exceeds the tolerance. Player-agnostic
+     * — polls the standard <video> currentTime, no per-platform events. */
+    _checkSeek(now) {
+      const v = this.capture.video;
+      if (!v) return;
+      if (v.paused) {           // paused (user or capture-hold): keep refs fresh, don't judge
+        this._lastCT = v.currentTime;
+        this._lastCTWall = now;
+        return;
+      }
+      const ct = v.currentTime;
+      if (this._lastCT != null) {
+        const dtVideo = ct - this._lastCT;
+        const dtWall = ((now - this._lastCTWall) / 1000) * (v.playbackRate || 1);
+        if (Math.abs(dtVideo - dtWall) > 1.0) this._onSeek(ct);  // >1s discrepancy = a jump
+      }
+      this._lastCT = ct;
+      this._lastCTWall = now;
+    }
+
+    /* A seek happened: drop anything in flight and wipe the cross-line state so the
+     * next line is translated fresh, with no bridge/context/dedup leaking across the
+     * cut. Cheap and conservative — a rare false positive just re-translates one line. */
+    _onSeek(ct) {
+      this.lineToken++;               // abandon any in-flight translation
+      this.sentenceLines = [];        // no continuation across the cut (6a)
+      this.sentenceHanzi = 0;
+      this.sourceHistory = [];        // context_lines are now stale (6b)
+      this.lastLineEndAt = 0;
+      this.lastShippedText = "";      // don't dedup the post-seek line against the pre-seek one
+      this.detector.reset();          // re-detect the line that's now on screen
+      clearTimeout(this.overlayClearTimer);
+      this.overlay.clear();
+      this._captureResume();          // release any capture hold
+      this._log(`seek to ${ct.toFixed(1)}s — continuity reset`, "info");
     }
 
     /* Replay: drive the overlay from the loaded track, timed to the video's
