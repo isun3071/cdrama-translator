@@ -253,8 +253,15 @@ shared/uploaded). Each cue carries `frame_id` (the pixel-line id), `t` (video se
 when to show), `dur`, the `source` hanzi, the corrected `text`, and the original `live`
 line for comparison. The extension's replay mode plays these against the video's
 `currentTime`. Reuses `judge_llm`'s provider routing + cost tally, and doubles as the
-distillation teacher pass (full-context targets for a streaming student). *(Glossary /
-context-note injection into the teacher is a noted follow-up.)*
+distillation teacher pass (full-context targets for a streaming student).
+
+It folds in the **same session-level context aids as live**, so the track has live's
+full context stack *plus* the future-context advantage: the **glossary** (per line, by
+label), the register **tone** (auto-read from the log, or `--tone`), and the
+episode/show **note** (`--context "…"` / `--context @file.txt`, else the note logged at
+capture — the log keeps only a 200-char prefix, so pass `--context` for the full
+summary). Without them a track could actually *regress* on terminology vs. glossary-on
+live; with them it's a strict upgrade.
 
 **Capturing a clean log** (a track is only as good as its log): capture in a **single
 forward pass** — turn on **capture mode** in the panel (it pauses per line so a slow

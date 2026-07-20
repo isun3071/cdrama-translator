@@ -17,14 +17,21 @@ personal artifact. Its outputs can also seed the distillation teacher pass — b
 across the corpus gate (>=3 shows / >=2 genres), never one show, or the student
 overfits that show (CLAUDE.md invariant 1).
 
+It folds in the SAME session-level context aids as live — the glossary (per line, by
+label), the register-lean tone (from the log, or --tone), and the episode/show note
+(--context, else the note logged at capture) — so the track gets live's full context
+stack PLUS the future-context advantage.
+
     python track.py [log]                 # -> <log>.track.json (latest run by default)
     python track.py [log] --out mytrack.json --window 8
+    python track.py [log] --context @summary.txt --tone formal
     env: TEACHER_MODEL (grader/teacher), JUDGE_PROVIDER, OPENROUTER_API_KEY / GROQ_API_KEY
 """
 
 from __future__ import annotations
 
 import argparse
+import collections
 import json
 import os
 import sys
@@ -39,26 +46,44 @@ except Exception:
 from audit import load, split_stages, _latest_log
 from audit_log import LOG_DIR
 from drift_judge import _episodes
+from glossary import GLOSSARY
 from judge_llm import complete, cost_estimate, judge_session, reset_usage
-from translate import _LANG, _system_prompt
+from translate import _LANG, _TONE, _system_prompt
 
 _CUE_MIN, _CUE_MAX, _CUE_DEFAULT = 0.8, 8.0, 3.0   # seconds
 
 
-def _teacher_sys(lang: str) -> str:
+def _teacher_sys(lang: str, context_note: str = "", tone: str = "") -> str:
     """The live system prompt's house RULES (name-tag elision, interrogative-without-吗,
     no context leak, register, OCR-noise tolerance, output-only) — so the track matches
     the live style — re-framed for the offline pass, which additionally has FUTURE
-    context. Strip the 'live subtitles' framing sentence and prepend the teacher one."""
+    context. Then the same session-level aids live folds into the system prompt: the
+    episode/show background note and the register-lean tone (glossary is per-line, in the
+    user message)."""
     base = _system_prompt(lang)
     live = f"You are translating live subtitles for a Chinese TV drama into {lang}. "
     rules = base[len(live):] if base.startswith(live) else base
-    return (
+    sys = (
         f"You are producing the definitive {lang} subtitle for a Chinese TV drama, OFFLINE, with "
         f"surrounding lines as context — including lines AFTER the one you translate, which a live "
         f"translator never sees. Use them to resolve names, references, register and split "
         f"sentences. " + rules
     )
+    if context_note:   # same wording as the live path (translate.py), so behaviour matches
+        sys += (
+            "\n\nBackground about the show/episode you are subtitling (reference only — use it to "
+            "disambiguate names, register and references; never translate it or copy its wording "
+            "into your output):\n" + context_note.strip()
+        )
+    td = _TONE.get(tone)
+    if td:
+        sys += (
+            f"\n\nRegister preference: where a line's own tone leaves room, lean toward a {td} "
+            f"register in the {lang}. This is an overall default and a tie-breaker for ambiguous "
+            "lines only — never override the register the source itself sets (keep a solemn, blunt, "
+            "ironic or formal line as it is)."
+        )
+    return sys
 
 
 def _finalize(cues: list[dict]) -> list[dict]:
@@ -83,16 +108,19 @@ def _finalize(cues: list[dict]) -> list[dict]:
     return out
 
 
-def _teacher(sess, url, model, provider, lang, before, target, after) -> str:
+def _teacher(sess, url, model, provider, system, before, target, after, glossary) -> str:
     ctx = []
     if before:
         ctx.append("Earlier lines:\n" + "\n".join(before))
     if after:
         ctx.append("Later lines:\n" + "\n".join(after))
     user = ("\n\n".join(ctx) + "\n\n" if ctx else "") + f">> Translate this line:\n{target}"
+    if glossary:   # per-line pinned terms, same as live (glossary 6b)
+        pins = "; ".join(f"{zh} = {en}" for zh, en in glossary.items())
+        user = f"Use these fixed translations verbatim wherever the term appears: {pins}.\n" + user
     out = complete(
         sess, url, model,
-        [{"role": "system", "content": _teacher_sys(lang)},
+        [{"role": "system", "content": system},
          {"role": "user", "content": user}],
         provider=provider, max_tokens=200, temperature=0.0, timeout=40,
     )
@@ -101,7 +129,8 @@ def _teacher(sess, url, model, provider, lang, before, target, after) -> str:
     return out.strip().strip('"').strip()
 
 
-def build(rows: list[dict], out_path: Path, target_lang: str, window: int) -> None:
+def build(rows: list[dict], out_path: Path, target_lang: str, window: int,
+          context_note: str = "", tone_override: str = "") -> None:
     sess, url, model, provider, has_key = judge_session(os.getenv("TEACHER_MODEL") or None)
     if not has_key:
         need = "OPENROUTER_API_KEY" if provider == "openrouter" else "GROQ_API_KEY"
@@ -118,8 +147,22 @@ def build(rows: list[dict], out_path: Path, target_lang: str, window: int) -> No
     if not total:
         print(f"no ok {target_lang} lines to rewrite.", file=sys.stderr)
         return
+
+    # The same session-level context aids live uses: tone (from the log, or --tone),
+    # the episode/show note (--context, else the note logged at capture), and the
+    # glossary (per line, by label — added in the loop). Folded in exactly as live does.
+    tone = tone_override or (collections.Counter(
+        r.get("tone") for r in ok if r.get("tone")).most_common(1) or [("", 0)])[0][0]
+    note_from_log = not context_note
+    if not context_note:
+        context_note = next((r.get("context_note") for r in ok if r.get("context_note")), "") or ""
+    system = _teacher_sys(lang, context_note, tone)
+
     print(f"\ntrack: rewriting {total} line(s) across {len(episodes)} episode(s) with "
-          f"teacher={model} via {provider}  (±{window}-line context, incl. future)\n")
+          f"teacher={model} via {provider}  (±{window}-line context, incl. future)")
+    print(f"  context: glossary on · tone={tone or 'auto'} · note={len(context_note)} chars"
+          + ("  (logged prefix — pass --context for the full summary)" if note_from_log and context_note else "")
+          + "\n")
 
     cues, done = [], 0
     for ep in episodes:
@@ -127,8 +170,9 @@ def build(rows: list[dict], out_path: Path, target_lang: str, window: int) -> No
         for i, r in enumerate(ep):
             before = srcs[max(0, i - window):i]
             after = srcs[i + 1:i + 1 + window]
+            gloss = GLOSSARY.matching(r["source_text"], before + after, r.get("label", ""))
             try:
-                text = _teacher(sess, url, model, provider, lang, before, r["source_text"], after)
+                text = _teacher(sess, url, model, provider, system, before, r["source_text"], after, gloss)
             except Exception as e:
                 text = r.get("translation", "") or ""   # fall back to the live line on failure
                 print(f"  (line {r.get('frame_id')}: teacher failed [{type(e).__name__}], kept live)", file=sys.stderr)
@@ -157,12 +201,29 @@ def build(rows: list[dict], out_path: Path, target_lang: str, window: int) -> No
         print(ce)
 
 
+def _read_context(val: str) -> str:
+    """--context is literal text, or @file to read the note from a file."""
+    if not val:
+        return ""
+    if val.startswith("@"):
+        try:
+            return Path(val[1:]).expanduser().read_text(encoding="utf-8").strip()
+        except Exception as e:
+            print(f"--context file unreadable ({e}); ignoring", file=sys.stderr)
+            return ""
+    return val
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("path", nargs="?", help="log file (default: most recent run)")
     ap.add_argument("--out", help="output track file (default: <log>.track.json)")
     ap.add_argument("--lang", default="en", help="target_lang to build the track for")
     ap.add_argument("--window", type=int, default=8, help="context lines each side (incl. future)")
+    ap.add_argument("--context", help="episode/show background for the teacher (text, or @file); "
+                                      "default: the note logged at capture (200-char prefix)")
+    ap.add_argument("--tone", help="register lean override (casual/formal/literary/playful/romantic/"
+                                   "business); default: the tone used at capture")
     args = ap.parse_args()
 
     path = Path(args.path) if args.path else _latest_log()
@@ -171,7 +232,7 @@ def main() -> int:
         return 1
     out = Path(args.out) if args.out else path.with_suffix(".track.json")
     print(f"log: {path.name}")
-    build(load(path), out, args.lang, args.window)
+    build(load(path), out, args.lang, args.window, _read_context(args.context), args.tone or "")
     return 0
 
 
