@@ -29,6 +29,7 @@ import argparse
 import collections
 import json
 import os
+import re
 import statistics
 import sys
 from pathlib import Path
@@ -356,6 +357,78 @@ def metrics(rows: list[dict]) -> None:
         print("      no display records (extension /log not reporting, or logging off)")
 
 
+def _norm_label(s: str) -> str:
+    """Same normalization as episode_id (drop a leading '(3) ' unread-count, collapse
+    whitespace) so old logs (grouped by label) and new logs (by episode_id) of one
+    episode land in the same group."""
+    return " ".join(re.sub(r"^\(\d+\)\s*", "", (s or "").strip()).split())
+
+
+def _log_files() -> list[Path]:
+    """Raw run logs only — exclude derived artifacts (verify / persona-ab)."""
+    return sorted(
+        (f for f in LOG_DIR.glob("*.jsonl")
+         if not f.name.endswith((".verify.jsonl", ".persona-ab.jsonl"))),
+        key=lambda p: p.stat().st_mtime,
+    )
+
+
+def manage_logs(do_prune: bool = False, delete: bool = False, tiny: int = 20,
+                keep_best: bool = False) -> None:
+    """Inventory the logs dir grouped by episode, and flag/prune the clutter that
+    per-video rotation accumulates: empty (0-line) files and tiny non-best fragments
+    from re-captures/false starts. keep_best is more aggressive — it keeps only the
+    single best capture per episode (collapses substantial re-captures too). The best
+    (most lines) capture of each episode is always kept. Prune is dry-run unless delete."""
+    files = _log_files()
+    if not files:
+        print(f"no logs in {LOG_DIR}")
+        return
+    info = []
+    for f in files:
+        tr = [r for r in load(f) if r.get("stage", "translate") == "translate"]
+        label = next((r.get("label") for r in tr if r.get("label")), "")
+        info.append({"f": f, "n": len(tr), "label": label or "(no label)",
+                     "key": _norm_label(label) or "(empty)", "size": f.stat().st_size})
+
+    groups: dict = {}
+    for it in info:
+        groups.setdefault(it["key"], []).append(it)
+    print(f"logs in {LOG_DIR}: {len(files)} files · {sum(i['size'] for i in info)/1e6:.1f}M · "
+          f"{len(groups)} episode(s)\n")
+
+    prunable = []
+    for _key, items in sorted(groups.items(), key=lambda kv: -max(i["n"] for i in kv[1])):
+        items = sorted(items, key=lambda x: -x["n"])
+        best = items[0]
+        grp_prune = (items[1:] if keep_best
+                     else [i for i in items if i["n"] == 0 or (i is not best and i["n"] < tiny)])
+        prunable += grp_prune
+        counts = ", ".join(str(i["n"]) for i in items)
+        tag = f"   -> prune {len(grp_prune)}, keep best ({best['n']})" if grp_prune else ""
+        print(f"  {best['label'][:46]:46s} {len(items):2d} files  lines: {counts}{tag}")
+
+    if not prunable:
+        print("\nall logs are substantial — nothing to prune.")
+        return
+    psize = sum(i["size"] for i in prunable)
+    kind = "all but the best capture per episode" if keep_best else "empty logs + tiny non-best fragments"
+    print(f"\nprunable: {len(prunable)} files (~{psize/1e3:.0f}K) — {kind}")
+    if not do_prune:
+        print("run  python audit.py --prune  to preview them,  --prune --delete  to remove.")
+        return
+    for i in sorted(prunable, key=lambda x: x["n"]):
+        if delete:
+            try:
+                i["f"].unlink()
+            except Exception as e:
+                print(f"  could not remove {i['f'].name}: {e}")
+        else:
+            print(f"  would remove: {i['n']:>4} lines  {i['f'].name}")
+    print(f"\ndeleted {len(prunable)} files." if delete
+          else "\nre-run with  --prune --delete  to remove them (best capture of each episode is kept).")
+
+
 def _latest_log() -> Path | None:
     files = sorted(LOG_DIR.glob("*.jsonl"), key=lambda p: p.stat().st_mtime)
     return files[-1] if files else None
@@ -370,7 +443,15 @@ def main() -> int:
     ap.add_argument("--pipeline", type=int, metavar="N", help="print the last N lines' full per-stage pipeline")
     ap.add_argument("--lang", help="filter to a target_lang")
     ap.add_argument("--label", help="filter to a label substring")
+    ap.add_argument("--logs", action="store_true", help="inventory the logs dir grouped by episode + flag prunable clutter")
+    ap.add_argument("--prune", action="store_true", help="preview prunable logs (empty + tiny non-best); add --delete to remove")
+    ap.add_argument("--keep-best", action="store_true", help="with --prune: keep only the single best capture per episode")
+    ap.add_argument("--delete", action="store_true", help="with --prune: actually delete the prunable logs")
     args = ap.parse_args()
+
+    if args.logs or args.prune:
+        manage_logs(do_prune=args.prune, delete=args.delete, keep_best=args.keep_best)
+        return 0
 
     if args.all:
         files = sorted(LOG_DIR.glob("*.jsonl"), key=lambda p: p.stat().st_mtime)

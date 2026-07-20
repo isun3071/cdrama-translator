@@ -114,6 +114,8 @@ python audit.py --all            # combine every run in the log dir
 python audit.py --pipeline 20    # last 20 lines' full per-stage trace (reads -> voted -> ctx -> translation -> display)
 python audit.py --metrics        # the accuracy STACK (OCR / consistency / latency), no LLM
 python audit.py --judge 40       # GEMBA-MQM: adequacy given the source (LLM, offline)
+python audit.py --logs           # inventory the logs dir grouped by episode; flag prunable clutter
+python audit.py --prune          # preview prunable logs (dry-run); --delete to remove; --keep-best to collapse re-captures
 python audit.py logs/cdrama-20260718-*.jsonl --label 四合院 --lang en
 ```
 
