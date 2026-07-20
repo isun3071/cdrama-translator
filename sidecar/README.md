@@ -116,6 +116,16 @@ python audit.py --metrics        # the accuracy STACK (OCR / consistency / laten
 python audit.py --judge 40       # GEMBA-MQM: adequacy given the source (LLM, offline)
 python audit.py --logs           # inventory the logs dir grouped by episode; flag prunable clutter
 python audit.py --prune          # preview prunable logs (dry-run); --delete to remove; --keep-best to collapse re-captures
+python audit.py --combine out.jsonl   # concatenate the logs into one file (backup/dataset); --keep-best for one/episode
+```
+
+For *analysis* you rarely need `--combine` — `--all` already treats every log as one
+corpus and still groups by episode. `--combine` is for a **backup** or a consolidated
+**distillation dataset**: it's a faithful concatenation (each row keeps its
+`episode_id`/`label`, so episodes stay distinguishable), written outside the logs dir so
+it isn't re-read. Prune (or `--keep-best`) first if you want one clean capture per episode.
+
+```
 python audit.py logs/cdrama-20260718-*.jsonl --label 四合院 --lang en
 ```
 

@@ -429,6 +429,43 @@ def manage_logs(do_prune: bool = False, delete: bool = False, tiny: int = 20,
           else "\nre-run with  --prune --delete  to remove them (best capture of each episode is kept).")
 
 
+def combine_logs(out_path: Path, keep_best: bool = False) -> None:
+    """Concatenate the run logs into ONE jsonl — for a backup or a consolidated
+    distillation dataset. Each row keeps its episode_id + label, so episodes stay
+    distinguishable inside the file and audit.py reads it as one big run. For ordinary
+    ANALYSIS you don't need this: `audit.py --all` already treats every log as one
+    corpus. keep_best includes only the best capture per episode (skips re-captures)."""
+    files = [f for f in _log_files() if f.resolve() != out_path.resolve()]
+    if not files:
+        print("no logs to combine.")
+        return
+    if keep_best:
+        best: dict = {}
+        for f in files:
+            tr = [r for r in load(f) if r.get("stage", "translate") == "translate"]
+            key = _norm_label(next((r.get("label") for r in tr if r.get("label")), "")) or "(empty)"
+            if key not in best or len(tr) > best[key][1]:
+                best[key] = (f, len(tr))
+        files = [v[0] for v in best.values()]
+    files = sorted(files, key=lambda p: p.stat().st_mtime)
+
+    n_rows = n_files = 0
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with out_path.open("w", encoding="utf-8") as out:
+        for f in files:
+            wrote = False
+            for line in f.read_text(encoding="utf-8").splitlines():
+                if line.strip():
+                    out.write(line + "\n")
+                    n_rows += 1
+                    wrote = True
+            n_files += 1 if wrote else 0
+    print(f"combined {n_files} logs -> {out_path}  ({n_rows} rows)")
+    print("  episodes stay distinguishable by episode_id/label in each row; audit.py reads it as one run.")
+    if out_path.resolve().parent == LOG_DIR.resolve():
+        print("  ⚠ it's inside the logs dir — future --all/--logs will re-read it (double-count). Put it elsewhere.")
+
+
 def _latest_log() -> Path | None:
     files = sorted(LOG_DIR.glob("*.jsonl"), key=lambda p: p.stat().st_mtime)
     return files[-1] if files else None
@@ -445,10 +482,14 @@ def main() -> int:
     ap.add_argument("--label", help="filter to a label substring")
     ap.add_argument("--logs", action="store_true", help="inventory the logs dir grouped by episode + flag prunable clutter")
     ap.add_argument("--prune", action="store_true", help="preview prunable logs (empty + tiny non-best); add --delete to remove")
-    ap.add_argument("--keep-best", action="store_true", help="with --prune: keep only the single best capture per episode")
+    ap.add_argument("--keep-best", action="store_true", help="with --prune/--combine: keep only the single best capture per episode")
     ap.add_argument("--delete", action="store_true", help="with --prune: actually delete the prunable logs")
+    ap.add_argument("--combine", metavar="OUT", help="concatenate the logs into one jsonl (backup/dataset); pair with --keep-best")
     args = ap.parse_args()
 
+    if args.combine:
+        combine_logs(Path(args.combine), keep_best=args.keep_best)
+        return 0
     if args.logs or args.prune:
         manage_logs(do_prune=args.prune, delete=args.delete, keep_best=args.keep_best)
         return 0
