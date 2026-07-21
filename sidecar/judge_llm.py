@@ -77,10 +77,22 @@ def complete(session, url: str, model: str, messages: list, *, provider: str = "
     body = {"model": model, "messages": messages, "temperature": temperature, "max_tokens": max_tokens}
     if response_format:
         body["response_format"] = response_format
-    # reasoning_effort is a Groq-side knob for Qwen/QwQ thinking models; don't send it
-    # to OpenRouter (param semantics differ per model there).
-    if provider == "groq" and any(k in model.lower() for k in ("qwen", "qwq")):
-        body["reasoning_effort"] = "none"
+    # Reasoning is OFF by default: it wastes tokens on judging/translation and reasoning
+    # models sometimes return null content (they spend the whole budget thinking).
+    # JUDGE_REASONING=on re-enables it; a level (low|medium|high) sets the effort.
+    rz = os.getenv("JUDGE_REASONING", "off").strip().lower()
+    if rz in ("on", "true", "1"):
+        pass                                              # let the model reason
+    elif rz in ("minimal", "low", "medium", "high"):      # a specific effort
+        if provider == "openrouter":
+            body["reasoning"] = {"effort": rz}
+        else:
+            body["reasoning_effort"] = rz
+    else:                                                 # off (default)
+        if provider == "openrouter":
+            body["reasoning"] = {"enabled": False}        # OpenRouter's unified switch
+        elif any(k in model.lower() for k in ("qwen", "qwq")):
+            body["reasoning_effort"] = "none"             # Groq's Qwen/QwQ switch
     r = session.post(url, json=body, timeout=timeout)
     r.raise_for_status()
     data = r.json()
