@@ -122,9 +122,9 @@ def _teacher(sess, url, model, provider, system, before, target, after, glossary
         sess, url, model,
         [{"role": "system", "content": system},
          {"role": "user", "content": user}],
-        provider=provider, max_tokens=200, temperature=0.0, timeout=40,
+        provider=provider, max_tokens=500, temperature=0.0, timeout=60,
     )
-    if "</think>" in out:
+    if "</think>" in out:          # a thinking model that still emitted a trace
         out = out.split("</think>")[-1]
     return out.strip().strip('"').strip()
 
@@ -164,18 +164,22 @@ def build(rows: list[dict], out_path: Path, target_lang: str, window: int,
           + ("  (logged prefix — pass --context for the full summary)" if note_from_log and context_note else "")
           + "\n")
 
-    cues, done = [], 0
+    cues, done, kept_live = [], 0, 0
     for ep in episodes:
         srcs = [r.get("source_text", "") for r in ep]
         for i, r in enumerate(ep):
             before = srcs[max(0, i - window):i]
             after = srcs[i + 1:i + 1 + window]
             gloss = GLOSSARY.matching(r["source_text"], before + after, r.get("label", ""))
+            text = ""
             try:
                 text = _teacher(sess, url, model, provider, system, before, r["source_text"], after, gloss)
             except Exception as e:
-                text = r.get("translation", "") or ""   # fall back to the live line on failure
-                print(f"  (line {r.get('frame_id')}: teacher failed [{type(e).__name__}], kept live)", file=sys.stderr)
+                if kept_live <= 5:
+                    print(f"  (line {r.get('frame_id')}: teacher error [{type(e).__name__}])", file=sys.stderr)
+            if not text:   # errored, or the model returned empty/null content -> keep the live line
+                text = r.get("translation", "") or ""
+                kept_live += 1
             cues.append({
                 "frame_id": r.get("frame_id"), "seq": r.get("line_seq"), "group": r.get("sentence_group_id"),
                 "episode_id": r.get("episode_id"), "t": round(float(r.get("video_time") or 0.0), 3),
@@ -185,6 +189,8 @@ def build(rows: list[dict], out_path: Path, target_lang: str, window: int,
             if done % 25 == 0 or done == total:
                 print(f"  {done}/{total} …", file=sys.stderr)
 
+    if kept_live:
+        print(f"  kept the live line on {kept_live}/{total} lines (teacher empty or errored)", file=sys.stderr)
     cues = _finalize(cues)   # sort by time, dedup re-visits, set durations from time-neighbors
     label = next((r.get("label") for r in ok if r.get("label")), "") or ""
     track = {

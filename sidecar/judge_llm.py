@@ -90,7 +90,10 @@ def complete(session, url: str, model: str, messages: list, *, provider: str = "
     rec["completion"] += u.get("completion_tokens", 0) or 0
     rec["cost"] += u.get("cost", 0) or 0        # OpenRouter returns billed cost; Groq doesn't
     rec["calls"] += 1
-    return data["choices"][0]["message"]["content"]
+    # content can be null (a reasoning model that spent its budget thinking, a refusal,
+    # a truncation) — coerce to "" so callers get a string, never None.
+    msg = (data.get("choices") or [{}])[0].get("message") or {}
+    return msg.get("content") or ""
 
 
 def reset_usage() -> None:
